@@ -1,7 +1,7 @@
 {
   "name": "VC Follow",
   "description": "Auto-follow a friend when they switch voice channels in the same server. /vcf @user and /vcunf.",
-  "authors": [{ "name": "VC Follow Community" }],
+  "authors": [{ "name": "Li Fawaz", "id": "1330929142643818516" }],
   "main": "src/index.ts",
   "vendetta": { "icon": "ic_voice_channel" }
 }
