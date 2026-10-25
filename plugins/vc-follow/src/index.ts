@@ -7,7 +7,6 @@ import { logger } from "@vendetta";
 import { findByProps } from "@vendetta/metro";
 import { registerCommand } from "@vendetta/commands";
 import { storage } from "@vendetta/plugin";
-import { after } from "@vendetta/patcher";
 import Settings from "./Settings";
 
 type VoiceState = {
@@ -200,17 +199,95 @@ export function stopFollowing(): string {
     setStatus('Not following');
     return 'VC Follow OFF';
 }
+
+// /vcloopjoin — bounded, one-shot-per-attempt join across ANY shared server (not restricted to
+// your current server, unlike auto-follow above). Capped at 2-3 tries, each try does ONE fresh
+// lookup of the target's current voice channel and ONE attempt to join it; it never polls for
+// their location in the background and always stops after the cap or a successful join —
+// this is not a standing tracker, just a short, bounded retry you trigger yourself.
+const LOOPJOIN_MIN_ATTEMPTS = 2;
+const LOOPJOIN_MAX_ATTEMPTS = 3;
+let loopjoinCancelled = false;
+
+function joinChannelDirect(destinationId: string): string {
+    const channels = channelStore();
+    const dest = channels?.getChannel?.(destinationId);
+    if (!dest) return 'Could not resolve that voice channel.';
+    if (!can(dest, CONNECT)) return 'Cannot join: no Connect permission for that channel.';
+    if (!channelCapacityAvailable(dest, destinationId)) return 'Cannot join: channel is full.';
+    const actions = voiceActions();
+    if (typeof actions?.selectVoiceChannel !== 'function') {
+        return 'Voice switching action unavailable on this build.';
+    }
+    try {
+        actions.selectVoiceChannel(destinationId);
+        return 'Joining now.';
+    } catch (err) {
+        return `Join failed: ${String(err)}`;
+    }
+}
+
+export async function loopJoin(idOrMention: unknown, attemptsRaw: unknown): Promise<string> {
+    const id = normalizeUserId(idOrMention);
+    if (!id) return 'Use /vcloopjoin <userid> — provide a valid Discord user ID.';
+    if (id === ownId()) return 'You cannot join yourself.';
+
+    const attempts = Math.max(
+        LOOPJOIN_MIN_ATTEMPTS,
+        Math.min(LOOPJOIN_MAX_ATTEMPTS, Number(attemptsRaw) || LOOPJOIN_MAX_ATTEMPTS)
+    );
+    loopjoinCancelled = false;
+
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        if (loopjoinCancelled) {
+            setStatus(`vcloopjoin cancelled before attempt ${attempt}`);
+            return 'Cancelled.';
+        }
+        const destination = getUserVoiceChannel(id);
+        if (!destination) {
+            setStatus(`vcloopjoin ${attempt}/${attempts}: user not in any shared voice channel`);
+            // small delay before the next fresh lookup, not a persistent poll loop
+            await new Promise((r) => setTimeout(r, 4000));
+            continue;
+        }
+        const result = joinChannelDirect(destination);
+        setStatus(`vcloopjoin ${attempt}/${attempts}: ${result}`);
+        if (result === 'Joining now.') return result;
+        if (attempt < attempts) await new Promise((r) => setTimeout(r, 4000));
+    }
+    return `Gave up after ${attempts} attempts — they weren't reachable in time.`;
+}
+
+export function cancelLoopJoin(): string {
+    if (!loopjoinCancelled) {
+        loopjoinCancelled = true;
+        return 'Cancelled.';
+    }
+    return 'No active /vcloopjoin to cancel.';
+}
 function readCommandUser(args: any): unknown {
-    const item = Array.isArray(args) ? (args.find(a => a?.name === 'user') ?? args[0]) : args;
+    const item = Array.isArray(args) ? (args.find(a => a?.name === 'userid') ?? args[0]) : args;
     return item?.value?.id ?? item?.value ?? item?.user?.id ?? item?.id ?? item;
 }
 function registerCommands() {
     for (const [name, description, options, handler] of [
         ['vcf', 'Auto-follow a friend between voice channels', [{
-            name: 'user', displayName: 'user', description: 'Friend to follow',
-            displayDescription: 'Friend to follow', type: 6, required: true,
+            name: 'userid', displayName: 'userid', description: 'Friend to follow (user ID)',
+            displayDescription: 'Friend to follow (user ID)', type: 3, required: true,
         }], (args: any) => followUser(readCommandUser(args))],
         ['vcunf', 'Stop automatically following VC', [], () => stopFollowing()],
+        ['vcloopjoin', 'Join a user in any shared server, retrying up to 2-3 times', [
+            { name: 'userid', displayName: 'userid', description: 'User ID to join',
+              displayDescription: 'User ID to join', type: 3, required: true },
+            { name: 'attempts', displayName: 'attempts', description: 'How many times to retry (2-3)',
+              displayDescription: 'How many times to retry (2-3)', type: 4, required: false },
+        ], (args: any) => {
+            const userId = readCommandUser(args);
+            const attemptsArg = Array.isArray(args) ? args.find((a: any) => a?.name === 'attempts')?.value : undefined;
+            loopJoin(userId, attemptsArg); // async, status updates via storage.status / log
+            return 'Trying to join — I will stop after a few attempts or on /vcloopjoincancel.';
+        }],
+        ['vcloopjoincancel', 'Stop an active /vcloopjoin', [], () => cancelLoopJoin()],
     ] as const) {
         try {
             const unregister = registerCommand({
@@ -223,30 +300,6 @@ function registerCommands() {
         } catch (err) { log(`Could not register /${name}: ${String(err)}`); }
     }
 }
-function registerProfileButton() {
-    // Optional, best-effort. Discord mobile profile action providers are private API.
-    const profiles = probe('Profile actions', [
-        ['getUserProfileActions'], ['getUserProfileActionItems'], ['getUserProfileMenuItems'],
-    ]);
-    if (!profiles) return;
-    const key = ['getUserProfileActions', 'getUserProfileActionItems', 'getUserProfileMenuItems']
-        .find(k => typeof profiles[k] === 'function');
-    if (!key) return;
-    try {
-        const unpatch = after(key, profiles, (args: any[], items: any) => {
-            if (!Array.isArray(items)) return items;
-            const user = args?.[0]?.user ?? args?.[0];
-            const id = normalizeUserId(user?.id ?? args?.[0]?.userId);
-            if (!id || id === ownId() || items.some(a => a?.id === 'vc-follow-profile')) return items;
-            const followed = storage.enabled && String(storage.targetUserId) === id;
-            const action = () => followed ? stopFollowing() : followUser(id);
-            return items.concat([{ id: 'vc-follow-profile', label: followed ? 'Unfollow VC' : 'Follow VC',
-                text: followed ? 'Unfollow VC' : 'Follow VC', action, onPress: action }]);
-        });
-        if (typeof unpatch === 'function') disposers.push(unpatch);
-        log('Profile actions hook installed (experimental)');
-    } catch (err) { log(`Profile hook unavailable: ${String(err)}`); }
-}
 export default {
     onLoad() {
         storage.enabled ??= false;
@@ -258,7 +311,6 @@ export default {
             ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening();
         registerCommands();
-        registerProfileButton();
         log('Loaded. VC Follow does not touch gateway mute/deafen packets.');
     },
     onUnload() {
