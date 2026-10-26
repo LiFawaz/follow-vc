@@ -246,60 +246,6 @@ function onVoiceUpdate(payload: any) {
     }
 }
 
-function findItems(result: any): any[] | null {
-    const direct = result?.props?.items ?? result?.props?.children?.props?.items;
-    if (Array.isArray(direct) && Array.isArray(direct[0])) return direct[0];
-
-    const stack = [result];
-    const seen = new Set<any>();
-
-    while (stack.length) {
-        const node = stack.pop();
-        if (!node || typeof node !== "object" || seen.has(node)) continue;
-        seen.add(node);
-
-        const items = node?.props?.items;
-        if (Array.isArray(items) && Array.isArray(items[0])) return items[0];
-
-        const children = node.props?.children;
-        if (Array.isArray(children)) stack.push(...children);
-        else if (children) stack.push(children);
-    }
-
-    return null;
-}
-
-function patchMenu(args: any[], result: any) {
-    const s = store();
-    if (!running || !result) return;
-
-    const id = args?.[0]?.user?.id;
-    if (!id || String(id) === ownId()) return;
-
-    const items = findItems(result);
-    if (!items) return;
-
-    const userId = String(id);
-    const following = !!s.enabled && String(s.targetUserId) === userId;
-
-    const toggle = () => {
-        if (s.enabled && String(s.targetUserId) === userId) stopFollowing();
-        else followUser(userId);
-    };
-
-    const entry = {
-        id: "vc-follow-profile",
-        label: following ? "Unfollow VC" : "Follow VC",
-        vcFollowAction: true,
-        action: toggle,
-        onPress: toggle,
-    };
-
-    const index = items.findIndex((item: any) => item?.vcFollowAction === true);
-    if (index >= 0) items[index] = entry;
-    else items.push(entry);
-}
-
 function registerCommands() {
     // Revenge Next exposes commands under api.api.commands; older builds may expose them directly.
     const commands = apiRef?.api?.commands ?? apiRef?.commands ?? probe("commands", [["registerCommand"]]);
