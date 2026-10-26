@@ -41,6 +41,9 @@ jobs:
       - name: Run tests
         run: pnpm test
 
+      - name: Compile Revenge plugin CLI
+        run: pnpm --dir node_modules/@revenge-mod/plugin-cli run build
+
       - name: Build Revenge Next plugin
         run: pnpm run build
 
