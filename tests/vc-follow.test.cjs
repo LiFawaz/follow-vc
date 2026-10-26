@@ -45,7 +45,7 @@ test("provides follow and unfollow actions without profile-menu patches", () => 
   assert.doesNotMatch(source, /function patchMenu\(/);
   assert.doesNotMatch(source, /vc-follow-profile/);
   assert.match(source, /selectVoiceChannel/);
-  assert.match(source, /\d\{15,22\}/);
+  assert.match(source, /\\d\{15,22\}/);
 });
 
 test("deployment builds the actual CLI output and packages a Next repository", () => {
