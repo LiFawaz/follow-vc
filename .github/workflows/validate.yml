@@ -9,11 +9,18 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    env:
+      npm_config_legacy_peer_deps: "true"
     steps:
       - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
       - uses: actions/setup-node@v4
         with:
           node-version: "22.18"
-      - run: npm install
-      - run: npm test
-      - run: npm run build
+      - run: pnpm install --no-frozen-lockfile
+      - run: pnpm test
+      - name: Compile Revenge plugin CLI
+        run: pnpm --dir node_modules/@revenge-mod/plugin-cli run build
+      - run: pnpm run build

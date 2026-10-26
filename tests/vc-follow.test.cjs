@@ -7,6 +7,8 @@ const root = path.join(__dirname, "..");
 const source = fs.readFileSync(path.join(root, "plugins/vc-follow/src/index.ts"), "utf8");
 const manifest = JSON.parse(fs.readFileSync(path.join(root, "plugins/vc-follow/manifest.json"), "utf8"));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+const deploy = fs.readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
+const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
 
 test("uses the official Revenge Next build toolchain", () => {
   assert.equal(pkg.scripts.build, "revenge-plugin build");
@@ -17,16 +19,23 @@ test("uses the official Revenge Next build toolchain", () => {
   assert.match(source, /@revenge-mod\/modules\/finders/);
 });
 
-test("exports a Revenge plugin with persistent settings", () => {
+test("has a valid native Revenge Next manifest", () => {
+  assert.equal(manifest.format, 1);
+  assert.equal(manifest.dist.script, "index.js");
+  assert.match(manifest.version, /^\d+(\.\d+)*(?:-[a-z0-9]+)?$/);
+  assert.ok(manifest.dependencies["revenge.api"]);
+  assert.ok(manifest.dependencies.discord);
+});
+
+test("exports a plugin with settings and lifecycle cleanup", () => {
   assert.match(source, /export default plugin</);
   assert.match(source, /jsonStorage:\s*\{/);
   assert.match(source, /SettingsComponent/);
-  assert.equal(manifest.format, 1);
-  assert.equal(manifest.dist.script, "index.js");
-  assert.ok(manifest.dependencies["revenge.api"]);
+  assert.match(source, /return stopPlugin/);
+  assert.match(source, /unpatches\.splice\(0\)\.reverse\(\)/);
 });
 
-test("provides follow and unfollow commands without a profile-menu patch", () => {
+test("provides follow and unfollow actions without profile-menu patches", () => {
   assert.match(source, /\["vcf",\s*"Follow a user voice channel by Discord user ID"/);
   assert.match(source, /\["vcunf",\s*"Stop following the current user"/);
   assert.match(source, /function registerCommands\(/);
@@ -36,10 +45,15 @@ test("provides follow and unfollow commands without a profile-menu patch", () =>
   assert.doesNotMatch(source, /function patchMenu\(/);
   assert.doesNotMatch(source, /vc-follow-profile/);
   assert.match(source, /selectVoiceChannel/);
+  assert.match(source, /\\d\{15,22\}/);
 });
 
-test("validates Discord user IDs and registers cleanup", () => {
-  assert.match(source, /\\d\{15,22\}/);
-  assert.match(source, /unpatches\.splice\(0\)\.reverse\(\)/);
-  assert.match(source, /return stopPlugin/);
+test("deployment builds the actual CLI output and packages a Next repository", () => {
+  assert.match(deploy, /pnpm run build/);
+  assert.match(deploy, /plugins\/vc-follow\/build\/js\/index\.js/);
+  assert.match(deploy, /revenge-plugin generate-index/);
+  assert.match(deploy, /dist\/index\.json/);
+  assert.doesNotMatch(deploy, /node build\.cjs/);
+  assert.match(readme, /native Revenge Next plugin system/);
+  assert.match(readme, /index\.json/);
 });

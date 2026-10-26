@@ -8,7 +8,7 @@
     "test": "node --test tests/*.test.cjs"
   },
   "dependencies": {
-    "@revenge-mod/plugin-cli": "git+https://github.com/revenge-mod/revenge-plugin-cli.git",
+    "@revenge-mod/plugin-cli": "https://github.com/revenge-mod/revenge-plugin-cli/archive/1ac592f9ec234278aa311058cb0b669e82d48beb.tar.gz",
     "@revenge-mod/types": "git+https://github.com/revenge-mod/revenge-types.git"
   },
   "devDependencies": {
