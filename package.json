@@ -11,6 +11,23 @@
     "@revenge-mod/plugin-cli": "git+https://github.com/revenge-mod/revenge-plugin-cli.git",
     "@revenge-mod/types": "git+https://github.com/revenge-mod/revenge-types.git"
   },
+  "devDependencies": {
+    "@types/react": "^19.2.18",
+    "react-native": "0.81.6",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "@react-native/community-cli-plugin": "npm:dry-uninstall",
+    "@react-native/codegen": "npm:dry-uninstall",
+    "babel-jest": "npm:dry-uninstall",
+    "babel-plugin-syntax-hermes-parser": "npm:dry-uninstall",
+    "hermes-compiler": "npm:dry-uninstall",
+    "jsc-android": "npm:dry-uninstall",
+    "react-devtools-core": "npm:dry-uninstall",
+    "recyclerlistview": "npm:dry-uninstall",
+    "react-native-gesture-handler": "npm:dry-uninstall",
+    "react-native-screens": "npm:dry-uninstall"
+  },
   "trustedDependencies": [
     "@revenge-mod/plugin-cli",
     "@swc/core"
