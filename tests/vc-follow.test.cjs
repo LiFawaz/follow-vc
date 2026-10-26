@@ -87,13 +87,13 @@ test('registers /vcf and /vcunf; follows transitions in same guild', () => {
   assert.equal(m.events.get('VOICE_STATE_UPDATES').size,0);
   assert.equal(m.storeCallbacks.size,0);
 });
-test('does not follow other users, locked channels, or another server', () => {
+test('ignores other users and locked channels, but follows across servers', () => {
   const m=environment();m.plugin.onLoad();
   m.commands.vcf.execute([{name:'user',value:TARGET}]);
   m.emit(OTHER,'next','origin');
   m.emit(TARGET,'locked','origin');
   m.emit(TARGET,'outside','locked');
-  assert.deepEqual(m.moves,[]);
+  assert.deepEqual(m.moves,['outside']);
   m.plugin.onUnload();
 });
 test('friend leaves VC does not force disconnection; profile action can toggle follow', () => {
