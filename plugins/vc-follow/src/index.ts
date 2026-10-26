@@ -147,7 +147,12 @@ function onVoiceStoreChanged(): void {
     // enter another VC. Keep follow mode active and bring them back to the target.
     if (current) {
         const mine = getOwnVoiceChannel();
-        if (mine !== current) tryMoveTo(current, "re-follow after own VC change");
+        if (mine !== current) {
+            // A previous join attempt may have targeted this same channel; a new
+            // user-initiated move is a fresh reason to retry immediately.
+            lastAttemptChannel = null;
+            tryMoveTo(current, "re-follow after own VC change");
+        }
     }
 }
 export function followUser(idOrMention: unknown): string {
