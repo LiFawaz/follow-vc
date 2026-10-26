@@ -1,36 +1,11 @@
 {
-  "name": "vc-follow",
+  "name": "vc-follow-revenge-legacy",
   "private": true,
-  "type": "module",
   "scripts": {
-    "build": "revenge-plugin build",
-    "build:dev": "revenge-plugin build --dev",
+    "build": "node build.cjs",
     "test": "node --test tests/*.test.cjs"
   },
-  "dependencies": {
-    "@revenge-mod/plugin-cli": "https://github.com/revenge-mod/revenge-plugin-cli/archive/1ac592f9ec234278aa311058cb0b669e82d48beb.tar.gz",
-    "@revenge-mod/types": "git+https://github.com/revenge-mod/revenge-types.git"
-  },
   "devDependencies": {
-    "@types/react": "^19.2.18",
-    "react-native": "0.86.0",
-    "typescript": "^7.0.2",
-    "react": "19.2.3"
-  },
-  "overrides": {
-    "@react-native/community-cli-plugin": "npm:dry-uninstall",
-    "@react-native/codegen": "npm:dry-uninstall",
-    "babel-jest": "npm:dry-uninstall",
-    "babel-plugin-syntax-hermes-parser": "npm:dry-uninstall",
-    "hermes-compiler": "npm:dry-uninstall",
-    "jsc-android": "npm:dry-uninstall",
-    "react-devtools-core": "npm:dry-uninstall",
-    "recyclerlistview": "npm:dry-uninstall",
-    "react-native-gesture-handler": "npm:dry-uninstall",
-    "react-native-screens": "npm:dry-uninstall"
-  },
-  "trustedDependencies": [
-    "@revenge-mod/plugin-cli",
-    "@swc/core"
-  ]
+    "typescript": "^5.9.3"
+  }
 }
