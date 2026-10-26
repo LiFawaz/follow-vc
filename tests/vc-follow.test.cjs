@@ -14,43 +14,43 @@ test("uses the official Revenge Next build toolchain", () => {
   assert.equal(pkg.scripts.build, "revenge-plugin build");
   assert.ok(pkg.dependencies["@revenge-mod/plugin-cli"]);
   assert.ok(pkg.dependencies["@revenge-mod/types"]);
-  assert.doesNotMatch(source, /@vendetta\\//);
-  assert.match(source, /@revenge-mod\\/modules\\/finders/);
+  assert.ok(!source.includes("@vendetta/"));
+  assert.ok(source.includes("@revenge-mod/modules/finders"));
 });
 
 test("has a valid native Revenge Next manifest", () => {
   assert.equal(manifest.format, 1);
   assert.equal(manifest.dist.script, "index.js");
-  assert.match(manifest.version, /^\\d+(\\.\\d+)*(?:-[a-z0-9]+)?$/);
+  assert.match(manifest.version, /^\d+(\.\d+)*(?:-[a-z0-9]+)?$/);
   assert.ok(manifest.dependencies["revenge.api"]);
   assert.ok(manifest.dependencies.discord);
 });
 
 test("implements profile follow toggle and removes slash-command registration", () => {
-  assert.match(source, /function patchProfileMenus\\(/);
-  assert.match(source, /function profileButton\\(/);
-  assert.match(source, /Follow this user/);
-  assert.match(source, /Stop following \\u?\\$\\{username/);
-  assert.match(source, /apiRef\\?\\.unscoped\\?\\.patcher/);
-  assert.doesNotMatch(source, /function registerCommands\\(/);
-  assert.doesNotMatch(source, /registerCommand/);
+  assert.ok(source.includes("function patchProfileMenus("));
+  assert.ok(source.includes("function profileButton("));
+  assert.ok(source.includes("Follow this user"));
+  assert.ok(source.includes("Stop following"));
+  assert.ok(source.includes("apiRef?.unscoped?.patcher"));
+  assert.ok(!source.includes("function registerCommands("));
+  assert.ok(!source.includes("registerCommand"));
 });
 
 test("follows target voice changes and retries pending full channels", () => {
-  assert.match(source, /function onVoiceUpdate\\(/);
-  assert.match(source, /function onVoiceStoreChanged\\(/);
-  assert.match(source, /pendingChannel/);
-  assert.match(source, /capacity freed/);
-  assert.match(source, /selectVoiceChannel/);
-  assert.match(source, /lastAttemptChannel = null/);
-  assert.match(source, /function stopFollowing\\(/);
+  assert.ok(source.includes("function onVoiceUpdate("));
+  assert.ok(source.includes("function onVoiceStoreChanged("));
+  assert.ok(source.includes("pendingChannel"));
+  assert.ok(source.includes("capacity freed"));
+  assert.ok(source.includes("selectVoiceChannel"));
+  assert.ok(source.includes("lastAttemptChannel = null"));
+  assert.ok(source.includes("function stopFollowing("));
 });
 
 test("persists follow state and documents fallback behavior", () => {
-  assert.match(source, /jsonStorage/);
-  assert.match(source, /targetUserId/);
-  assert.match(readme, /Stop following username/);
-  assert.match(readme, /settings fallback/);
-  assert.match(deploy, /pnpm run build/);
-  assert.match(deploy, /revenge-plugin generate-index/);
+  assert.ok(source.includes("jsonStorage"));
+  assert.ok(source.includes("targetUserId"));
+  assert.ok(readme.includes("Stop following username"));
+  assert.ok(readme.includes("settings fallback"));
+  assert.ok(deploy.includes("pnpm run build"));
+  assert.ok(deploy.includes("revenge-plugin generate-index"));
 });
