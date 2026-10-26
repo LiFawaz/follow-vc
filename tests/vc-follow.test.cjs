@@ -34,13 +34,14 @@ function environment() {
     unsubscribe: (name,cb) => events.get(name)?.delete(cb),
     dispatch: (payload) => { for (const cb of events.get(payload.type)??[]) cb(payload); },
   };
-  let profileActions = { getUserProfileActions(user) { return [{id:'unrelated'}]; } };
+  const profileActions = { getUserProfileActions(user) { return [{id:'unrelated'}]; } };
   const modules = [voiceStore,selectedStore,channelStore,userStore,permissionStore,actions,dispatcher,profileActions];
   const storage = {};
   const vendetta = {
     logger: {log() {}},
     metro: {
       findByProps: (...props) => modules.find(mod => props.every(prop => typeof mod[prop] !== 'undefined')),
+      findByName: () => null,
       common: {React: {createElement: () => null, useState: init => [init,()=>{}]},ReactNative: {}},
     },
     commands: {registerCommand: command => {commands[command.name]=command;return()=>delete commands[command.name];}},
@@ -56,21 +57,19 @@ function environment() {
   const result = new Function('vendetta','return ' + source)(vendetta);
   const plugin = result.default;
   return {plugin,storage,commands,moves,events,storeCallbacks,
-    profileActions,
     emit: (userId, channelId, oldChannelId) => {
       state[userId] = {userId,channelId,oldChannelId};
       dispatcher.dispatch({type:'VOICE_STATE_UPDATES', voiceStates:[{userId,channelId,oldChannelId}]});
       for (const cb of [...storeCallbacks]) cb();
     },
     setCurrentChannel: id => {currentChannel=id;},
-    getCurrentChannel: () => currentChannel,
     patchCount: ()=>patches.length,
   };
 }
 test('registers /vcf and /vcunf; follows transitions in same guild', () => {
   const m = environment(); m.plugin.onLoad();
   assert.ok(m.commands.vcf); assert.ok(m.commands.vcunf);
-  assert.equal(m.commands.vcf.execute([{name:'user',value:TARGET}]).send,false);
+  assert.equal(m.commands.vcf.execute([{name:'userid',value:TARGET}]).send,false);
   assert.equal(m.storage.targetUserId,TARGET);
   m.emit(TARGET,'next','origin');
   assert.deepEqual(m.moves,['next']);
@@ -89,33 +88,32 @@ test('registers /vcf and /vcunf; follows transitions in same guild', () => {
 });
 test('ignores other users and locked channels, but follows across servers', () => {
   const m=environment();m.plugin.onLoad();
-  m.commands.vcf.execute([{name:'user',value:TARGET}]);
+  m.commands.vcf.execute([{name:'userid',value:TARGET}]);
   m.emit(OTHER,'next','origin');
   m.emit(TARGET,'locked','origin');
   m.emit(TARGET,'outside','locked');
   assert.deepEqual(m.moves,['outside']);
   m.plugin.onUnload();
 });
-test('friend leaves VC does not force disconnection; profile action can toggle follow', () => {
+test('friend leaving voice does not disconnect us; following stays enabled', () => {
   const m=environment();m.plugin.onLoad();
-  const actions=m.profileActions.getUserProfileActions({id:TARGET});
-  const follow=actions.find(x=>x.id==='vc-follow-profile');
-  assert.equal(follow.label,'Follow VC');
-  follow.onPress();
-  assert.equal(m.storage.targetUserId,TARGET);
+  m.commands.vcf.execute([{name:'userid',value:TARGET}]);
   m.emit(TARGET,'next','origin');
   assert.deepEqual(m.moves,['next']);
   m.emit(TARGET,null,'next');
   assert.deepEqual(m.moves,['next']);
+  assert.equal(m.storage.enabled,true);
+  m.emit(TARGET,'next2',null);
+  assert.deepEqual(m.moves,['next','next2']);
   m.plugin.onUnload();
 });
-test('rejects invalid targets and does not follow unless already in VC', () => {
+test('rejects invalid targets and can follow when not already in voice', () => {
   const m=environment();m.plugin.onLoad();
-  const invalid=m.commands.vcf.execute([{name:'user',value:'oops'}]);
+  const invalid=m.commands.vcf.execute([{name:'userid',value:'oops'}]);
   assert.match(invalid.result,/valid Discord user ID/);
-  m.commands.vcf.execute([{name:'user',value:TARGET}]);
+  m.commands.vcf.execute([{name:'userid',value:TARGET}]);
   m.setCurrentChannel(null);
   m.emit(TARGET,'next','origin');
-  assert.deepEqual(m.moves,[]);
+  assert.deepEqual(m.moves,['next']);
   m.plugin.onUnload();
 });
