@@ -1,7 +1,8 @@
 
-import { logger } from "@revenge-mod/core";
-import { findByProps, findByName } from "@revenge-mod/metro";
+import { findByProps, findByName } from "@revenge-mod/modules/finders";
 import { after } from "@revenge-mod/patcher";
+import React from "react";
+import * as ReactNative from "react-native";
 
 const MENU_NAMES = [
     "UserProfileOverflowMenu",
@@ -25,7 +26,15 @@ function log(message: string) {
 }
 
 function store() {
-    return apiRef?.plugin?.storage ?? apiRef?.storage ?? {};
+    return apiRef?.jsonStorage?.cache ?? {};
+}
+
+function persist() {
+    try {
+        apiRef?.jsonStorage?.set?.({ ...store() });
+    } catch (error) {
+        log(`Could not persist settings: ${String(error)}`);
+    }
 }
 
 function probe(label: string, candidates: string[][]): any {
@@ -134,6 +143,7 @@ function ownVoiceChannel(): string | null {
 function setStatus(message: string) {
     const s = store();
     s.status = message;
+    persist();
     log(message);
 }
 
@@ -197,6 +207,7 @@ export function followUser(rawId: unknown): string {
 
     s.targetUserId = id;
     s.enabled = true;
+    persist();
     lastAttemptChannel = null;
     lastAttemptAt = 0;
     lastTargetChannel = getVoiceChannel(id);
@@ -215,6 +226,7 @@ export function stopFollowing(): string {
 
     s.enabled = false;
     s.targetUserId = null;
+    persist();
     lastTargetChannel = null;
     lastAttemptChannel = null;
     lastAttemptAt = 0;
@@ -403,9 +415,48 @@ function stopPlugin() {
     log("Unloaded");
 }
 
-export default plugin({
+function SettingsComponent({ api }: { api: any }) {
+    const settings = api.jsonStorage.use() ?? {};
+    const [id, setId] = React.useState(String(settings.targetUserId ?? ""));
+    const [result, setResult] = React.useState("");
+    const RN = ReactNative as any;
+    const e = React.createElement;
+
+    const text = (value: string, style: object = {}) =>
+        e(RN.Text, { style: { color: "#eeeeee", fontSize: 15, marginBottom: 10, ...style } }, value);
+    const button = (label: string, onPress: () => void, color: string) =>
+        e(RN.TouchableOpacity, {
+            onPress,
+            style: { backgroundColor: color, padding: 12, borderRadius: 8, marginVertical: 6 },
+        }, text(label, { color: "#ffffff", fontWeight: "bold", textAlign: "center", marginBottom: 0 }));
+
+    return e(RN.ScrollView, { contentContainerStyle: { padding: 16 } },
+        text("VC Follow", { fontSize: 22, fontWeight: "bold" }),
+        text("Follow a friend between voice channels, including across servers. You can also use /vcf and /vcunf or the Follow VC action on a user profile.", { color: "#cccccc", fontSize: 14 }),
+        text(`Status: ${settings.status ?? "Not following anyone"}`, { color: settings.enabled ? "#57f287" : "#aaaaaa" }),
+        text("Follow by User ID", { fontWeight: "bold", fontSize: 16 }),
+        e(RN.TextInput, {
+            value: id,
+            onChangeText: setId,
+            keyboardType: "numeric",
+            placeholder: "123456789012345678",
+            placeholderTextColor: "#666666",
+            style: { color: "#ffffff", backgroundColor: "#262932", borderRadius: 8, padding: 12, fontSize: 15 },
+        }),
+        button("Follow", () => setResult(followUser(id)), "#5865F2"),
+        button("Unfollow", () => { setResult(stopFollowing()); setId(""); }, "#42454c"),
+        result ? text(result, { color: "#a1b4fc", marginTop: 8 }) : null
+    );
+}
+
+export default plugin<{ jsonStorage: { enabled: boolean; targetUserId: string | null; status: string } }>({
+    jsonStorage: {
+        load: true,
+        default: { enabled: false, targetUserId: null, status: "Not following anyone" },
+    },
     start(api: any) {
         startPlugin(api);
         return stopPlugin;
     },
+    SettingsComponent,
 });
