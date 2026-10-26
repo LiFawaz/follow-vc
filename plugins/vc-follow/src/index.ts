@@ -1,39 +1,28 @@
 
-/**
- * VC Follow — Vendetta-compatible plugin
- *
- * Follows one user between voice channels, including across servers.
- * Persists the selected target until the user unfollows or switches target.
- * Retries joining a full voice channel when voice state changes.
- *
- * Author: Li Fawaz
- *
- * Compatibility note:
- * This file uses the legacy @vendetta/* API expected by the original
- * project. It is NOT a native @revenge-mod/* plugin migration.
- */
-
 import { logger } from "@vendetta";
 import { findByProps, findByName } from "@vendetta/metro";
-import { React, ReactNative } from "@vendetta/metro/common";
 import { after } from "@vendetta/patcher";
+import { findInReactTree } from "@vendetta/utils";
 import { storage } from "@vendetta/plugin";
 import Settings from "./Settings";
 
+const PROFILE_MENU_NAMES = [
+    "UserProfileOverflowMenu",
+    "BotUserProfileOverflowMenu",
+];
+
 const PERM_CONNECT = 1n << 20n;
 const PERM_MOVE_MEMBERS = 1n << 24n;
+const DEBOUNCE_MS = 2500;
 
-const disposers: Array<() => void> = [];
-const moduleCache = new Map<string, any>();
+const unpatches: Array<() => void> = [];
+const cache = new Map<string, any>();
 
 let running = false;
 let lastSeenTargetChannel: string | null = null;
+let pendingFollowDest: string | null = null;
 let lastAttemptChannel: string | null = null;
 let lastAttemptAt = 0;
-let pendingFollowDest: string | null = null;
-let retryQueued = false;
-
-const DEBOUNCE_MS = 2500;
 
 function log(message: string): void {
     try {
@@ -47,16 +36,14 @@ function setStatus(message: string): void {
 }
 
 function probe(label: string, candidates: string[][]): any {
-    if (moduleCache.has(label)) {
-        return moduleCache.get(label);
-    }
+    if (cache.has(label)) return cache.get(label);
 
     for (const keys of candidates) {
         try {
-            const result = findByProps(...keys);
-            if (result) {
-                moduleCache.set(label, result);
-                return result;
+            const module = findByProps(...keys);
+            if (module) {
+                cache.set(label, module);
+                return module;
             }
         } catch {}
     }
@@ -64,57 +51,38 @@ function probe(label: string, candidates: string[][]): any {
     return null;
 }
 
-function probeByName(name: string): any {
-    if (moduleCache.has(`name:${name}`)) {
-        return moduleCache.get(`name:${name}`);
-    }
+function probeName(name: string): any {
+    if (cache.has(name)) return cache.get(name);
 
     try {
-        const result = findByName(name, false);
-        if (result) {
-            moduleCache.set(`name:${name}`, result);
-            return result;
+        const module = findByName(name, false);
+        if (module) {
+            cache.set(name, module);
+            return module;
         }
     } catch {}
 
     return null;
 }
 
-function voiceStore(): any {
-    return probe("VoiceStateStore", [
+const voiceStore = () =>
+    probe("VoiceStateStore", [
         ["getVoiceStateForUser", "getVoiceStatesForChannel"],
         ["getVoiceStateForUser"],
         ["getAllVoiceStates"],
     ]);
-}
 
-function channelStore(): any {
-    return probe("ChannelStore", [
-        ["getChannel", "getDMFromUserId"],
-        ["getChannel"],
-    ]);
-}
+const channelStore = () =>
+    probe("ChannelStore", [["getChannel"]]);
 
-function userStore(): any {
-    return probe("UserStore", [
-        ["getCurrentUser", "getUser"],
-        ["getCurrentUser"],
-    ]);
-}
+const userStore = () =>
+    probe("UserStore", [["getCurrentUser", "getUser"], ["getCurrentUser"]]);
 
-function permissionStore(): any {
-    return probe("PermissionStore", [
-        ["can", "canWithPartialContext"],
-        ["can"],
-    ]);
-}
+const permissionStore = () =>
+    probe("PermissionStore", [["can"]]);
 
-function voiceActions(): any {
-    return probe("VoiceActions", [
-        ["selectVoiceChannel", "disconnect"],
-        ["selectVoiceChannel"],
-    ]);
-}
+const voiceActions = () =>
+    probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]);
 
 function ownId(): string | null {
     try {
@@ -124,77 +92,60 @@ function ownId(): string | null {
     }
 }
 
-function getUsername(userId: string): string {
+function getUsername(id: string): string {
     try {
-        const user = userStore()?.getUser?.(userId);
-        return user?.globalName
-            ?? user?.displayName
-            ?? user?.username
-            ?? userId;
+        const user = userStore()?.getUser?.(id);
+        return user?.globalName ?? user?.displayName ?? user?.username ?? id;
     } catch {
-        return userId;
+        return id;
     }
 }
 
-function normalizeUserId(raw: unknown): string | null {
-    const match = /^(?:<@!?)?(\d{15,22})>?$/.exec(
-        String(raw ?? "").trim()
-    );
+function normalizeUserId(value: unknown): string | null {
+    const match = /^(?:<@!?)?(\d{15,22})>?$/.exec(String(value ?? "").trim());
     return match?.[1] ?? null;
 }
 
-function extractChannelId(state: any): string | null {
-    const value = state?.channelId ?? state?.channel_id ?? null;
-    return value == null ? null : String(value);
-}
-
-function getUserVoiceChannel(userId: string): string | null {
+function getUserVoiceChannel(id: string): string | null {
     const store = voiceStore();
     if (!store) return null;
 
     try {
-        const direct = store.getVoiceStateForUser?.(userId);
-        if (direct) return extractChannelId(direct);
+        const state = store.getVoiceStateForUser?.(id);
+        if (state) return state.channelId ?? state.channel_id ?? null;
 
         const all = store.getAllVoiceStates?.();
         if (all && typeof all === "object") {
             for (const group of Object.values(all) as any[]) {
-                if (!group || typeof group !== "object") continue;
-
-                const state = group[userId];
-                if (state) return extractChannelId(state);
+                const state = group?.[id];
+                if (state) return state.channelId ?? state.channel_id ?? null;
             }
         }
     } catch (error) {
-        log(`Could not read voice state: ${String(error)}`);
+        log(`Voice lookup failed: ${String(error)}`);
     }
 
     return null;
 }
 
 function getOwnVoiceChannel(): string | null {
-    const selected = probe("SelectedChannelStore", [
+    const store = probe("SelectedChannelStore", [
         ["getVoiceChannelId"],
         ["getCurrentVoiceChannelId"],
     ]);
 
     try {
-        const value =
-            selected?.getVoiceChannelId?.()
-            ?? selected?.getCurrentVoiceChannelId?.()
+        return store?.getVoiceChannelId?.()
+            ?? store?.getCurrentVoiceChannelId?.()
             ?? null;
-
-        return value == null ? null : String(value);
     } catch {
         return null;
     }
 }
 
-function can(channel: any, permission: bigint): boolean {
+function can(channel: any, permission: bigint): boolean | null {
     const store = permissionStore();
-
-    // Unknown permission status is not proof that joining is permitted.
-    if (!store || typeof store.can !== "function") return true;
+    if (typeof store?.can !== "function") return null;
 
     try {
         return !!store.can(permission, channel);
@@ -202,311 +153,305 @@ function can(channel: any, permission: bigint): boolean {
         try {
             return !!store.can(Number(permission), channel);
         } catch {
-            return true;
+            return null;
         }
     }
 }
 
-function countVoiceMembers(channelId: string): number | null {
+function channelHasSpace(channel: any, channelId: string): boolean | null {
+    if (!channel) return null;
+
+    const limit = Number(channel.userLimit ?? channel.user_limit ?? 0);
+    if (!Number.isFinite(limit) || limit <= 0) return true;
+
+    if (can(channel, PERM_MOVE_MEMBERS) === true) return true;
+
     try {
         const states = voiceStore()?.getVoiceStatesForChannel?.(channelId);
         if (!states) return null;
 
-        if (typeof states.size === "number") return states.size;
-        if (Array.isArray(states)) return states.length;
+        const count =
+            typeof states.size === "number" ? states.size :
+            Array.isArray(states) ? states.length :
+            typeof states === "object" ? Object.keys(states).length : 0;
 
-        if (typeof states === "object") {
-            return Object.keys(states).length;
-        }
-    } catch {}
-
-    return null;
-}
-
-function channelHasSpace(channel: any, channelId: string): boolean {
-    const limit = Number(channel?.userLimit ?? channel?.user_limit ?? 0);
-
-    if (!Number.isFinite(limit) || limit <= 0) return true;
-    if (can(channel, PERM_MOVE_MEMBERS)) return true;
-
-    const count = countVoiceMembers(channelId);
-
-    // If the member count is unknown, attempt the join and let Discord
-    // enforce its own permissions and channel capacity.
-    if (count === null) return true;
-
-    return count < limit;
-}
-
-function clearPending(): void {
-    pendingFollowDest = null;
-    retryQueued = false;
+        return count < limit;
+    } catch {
+        return null;
+    }
 }
 
 function tryMoveTo(destinationId: string, source: string): void {
-    if (
-        !running
-        || !storage.enabled
-        || !storage.targetUserId
-        || !destinationId
-    ) {
-        return;
-    }
-
-    const targetId = String(storage.targetUserId);
-
-    // Do not join an outdated destination after the target has moved again.
-    const actualTargetChannel = getUserVoiceChannel(targetId);
-    if (
-        actualTargetChannel
-        && actualTargetChannel !== destinationId
-    ) {
-        pendingFollowDest = actualTargetChannel;
-        queueRetry();
-        return;
-    }
+    if (!running || !storage.enabled || !storage.targetUserId || !destinationId) return;
 
     if (getOwnVoiceChannel() === destinationId) {
-        clearPending();
-        setStatus(`Already in ${getUsername(targetId)}'s voice channel`);
-        return;
-    }
-
-    const now = Date.now();
-    if (
-        lastAttemptChannel === destinationId
-        && now - lastAttemptAt < DEBOUNCE_MS
-    ) {
-        // Keep the pending destination so a later voice-state change can
-        // retry it after the debounce window has expired.
-        pendingFollowDest = destinationId;
-        return;
-    }
-
-    const destination = channelStore()?.getChannel?.(destinationId);
-
-    if (destination && !can(destination, PERM_CONNECT)) {
-        clearPending();
-        setStatus("Can't follow: no permission to connect to that channel");
+        pendingFollowDest = null;
+        setStatus(`Already in ${getUsername(String(storage.targetUserId))}'s voice channel`);
         return;
     }
 
     if (
-        destination
-        && !channelHasSpace(destination, destinationId)
-    ) {
-        pendingFollowDest = destinationId;
-        setStatus(
-            `Voice channel is full — waiting for a slot for ${getUsername(targetId)}`
-        );
-        return;
+        lastAttemptChannel === destinationId &&
+        Date.now() - lastAttemptAt < DEBOUNCE_MS
+    ) return;
+
+    let channel: any = null;
+
+    try {
+        channel = channelStore()?.getChannel?.(destinationId) ?? null;
+    } catch {}
+
+    if (channel) {
+        if (can(channel, PERM_CONNECT) === false) {
+            pendingFollowDest = null;
+            setStatus("Can't join: missing permission to connect");
+            return;
+        }
+
+        if (channelHasSpace(channel, destinationId) === false) {
+            pendingFollowDest = destinationId;
+            setStatus("Voice channel is full; waiting for a free slot");
+            return;
+        }
     }
 
     const actions = voiceActions();
+
     if (typeof actions?.selectVoiceChannel !== "function") {
-        pendingFollowDest = destinationId;
-        setStatus("Voice switching API wasn't found on this Discord build");
+        setStatus("Voice switching API not found on this Discord build");
         return;
     }
 
     pendingFollowDest = null;
     lastAttemptChannel = destinationId;
-    lastAttemptAt = now;
+    lastAttemptAt = Date.now();
 
     try {
         actions.selectVoiceChannel(destinationId);
-
-        const channelName = destination?.name ?? destinationId;
-        setStatus(
-            `Following ${getUsername(targetId)} in ${channelName} (${source})`
-        );
+        setStatus(`Trying to join ${channel?.name ?? "target voice channel"} (${source})`);
     } catch (error) {
-        pendingFollowDest = destinationId;
-        setStatus(`Voice join failed: ${String(error)}`);
+        setStatus(`Join failed: ${String(error)}`);
     }
-}
-
-function queueRetry(): void {
-    if (retryQueued || !running) return;
-    retryQueued = true;
-
-    // A short defer allows Discord's store to process the current dispatch
-    // before we query the target and destination again.
-    Promise.resolve().then(() => {
-        retryQueued = false;
-        retryPending();
-    });
 }
 
 function retryPending(): void {
-    if (
-        !running
-        || !storage.enabled
-        || !storage.targetUserId
-    ) {
-        return;
-    }
+    if (!pendingFollowDest || !running || !storage.enabled) return;
 
-    const targetId = String(storage.targetUserId);
-    const currentTargetChannel = getUserVoiceChannel(targetId);
+    const destination = pendingFollowDest;
+    const channel = channelStore()?.getChannel?.(destination);
+    const capacity = channelHasSpace(channel, destination);
 
-    // The target may have switched channels while we were waiting.
-    if (
-        currentTargetChannel
-        && currentTargetChannel !== pendingFollowDest
-    ) {
-        pendingFollowDest = currentTargetChannel;
-    }
+    if (capacity === false) return;
 
-    if (!currentTargetChannel) {
-        // Continue following; a later voice event will resume it.
-        return;
-    }
-
-    if (!pendingFollowDest) return;
-
-    const destination = channelStore()?.getChannel?.(pendingFollowDest);
-    if (
-        destination
-        && !channelHasSpace(destination, pendingFollowDest)
-    ) {
-        return;
-    }
-
-    tryMoveTo(pendingFollowDest, "retry");
+    lastAttemptChannel = null;
+    tryMoveTo(destination, "retry");
 }
 
 function onVoiceEvent(payload: any): void {
     if (!running || !payload) return;
 
-    const updates: any[] =
-        Array.isArray(payload.voiceStates) ? payload.voiceStates
-        : Array.isArray(payload.voice_states) ? payload.voice_states
-        : payload.voiceState ? [payload.voiceState]
-        : [payload];
-
-    const targetId = storage.targetUserId
-        ? String(storage.targetUserId)
-        : null;
+    const updates = Array.isArray(payload.voiceStates)
+        ? payload.voiceStates
+        : Array.isArray(payload.voice_states)
+            ? payload.voice_states
+            : payload.voiceState
+                ? [payload.voiceState]
+                : payload.voice_state
+                    ? [payload.voice_state]
+                    : [payload];
 
     for (const state of updates) {
         if (!state) continue;
 
         const userId = String(state.userId ?? state.user_id ?? "");
-        if (!targetId || userId !== targetId) continue;
+        if (userId !== String(storage.targetUserId ?? "")) continue;
 
-        const channelId = extractChannelId(state);
+        const channelId = state.channelId ?? state.channel_id ?? null;
         lastSeenTargetChannel = channelId;
 
-        if (!channelId) {
-            setStatus(
-                `Waiting for ${getUsername(targetId)} to rejoin voice`
-            );
-            continue;
+        if (channelId) {
+            tryMoveTo(String(channelId), "voice event");
+        } else {
+            setStatus("Target left voice; waiting for them to rejoin");
         }
-
-        pendingFollowDest = channelId;
-        queueRetry();
     }
 
-    // Other users leaving a channel may free a slot for the target.
-    queueRetry();
+    retryPending();
 }
 
 function onVoiceStoreChanged(): void {
-    if (
-        !running
-        || !storage.enabled
-        || !storage.targetUserId
-    ) {
-        return;
-    }
+    if (!running || !storage.enabled || !storage.targetUserId) return;
 
-    const targetId = String(storage.targetUserId);
-    const currentChannel = getUserVoiceChannel(targetId);
+    const store = voiceStore();
+    if (!store) return;
 
-    if (currentChannel !== lastSeenTargetChannel) {
-        lastSeenTargetChannel = currentChannel;
+    const current = getUserVoiceChannel(String(storage.targetUserId));
 
-        if (currentChannel) {
-            pendingFollowDest = currentChannel;
+    if (current !== lastSeenTargetChannel) {
+        lastSeenTargetChannel = current;
+
+        if (current) {
+            tryMoveTo(current, "store change");
         } else {
-            setStatus(
-                `Waiting for ${getUsername(targetId)} to rejoin voice`
-            );
+            setStatus("Target left voice; waiting for them to rejoin");
         }
     }
 
-    // This path also runs when someone else leaves a full channel.
-    queueRetry();
+    retryPending();
 }
 
 export function followUser(rawId: unknown): string {
     const id = normalizeUserId(rawId);
 
-    if (!id) {
-        return "Invalid user ID. Expected a 15–22 digit Discord ID.";
-    }
-
-    if (id === ownId()) {
-        return "You can't follow yourself.";
-    }
-
-    const previous = storage.enabled
-        ? String(storage.targetUserId ?? "")
-        : "";
+    if (!id) return "Invalid Discord user ID";
+    if (id === ownId()) return "You can't follow yourself";
 
     storage.targetUserId = id;
     storage.enabled = true;
 
-    clearPending();
+    pendingFollowDest = null;
     lastAttemptChannel = null;
     lastAttemptAt = 0;
     lastSeenTargetChannel = getUserVoiceChannel(id);
 
-    const prefix = previous && previous !== id
-        ? `Switched to following ${getUsername(id)}`
-        : `Following ${getUsername(id)}`;
-
     if (lastSeenTargetChannel) {
-        pendingFollowDest = lastSeenTargetChannel;
         tryMoveTo(lastSeenTargetChannel, "follow start");
-        return `${prefix} — attempting to join their channel`;
+        return `Following ${getUsername(id)}`;
     }
 
-    setStatus(
-        `Waiting for ${getUsername(id)} to enter a voice channel`
-    );
-
-    return `${prefix} — will follow when they join voice`;
+    setStatus(`Waiting for ${getUsername(id)} to join a voice channel`);
+    return `Following ${getUsername(id)}; waiting for them to join voice`;
 }
 
 export function stopFollowing(): string {
-    const previous = storage.targetUserId
-        ? String(storage.targetUserId)
-        : null;
+    const oldId = storage.targetUserId;
 
     storage.enabled = false;
     storage.targetUserId = null;
 
-    clearPending();
+    pendingFollowDest = null;
     lastSeenTargetChannel = null;
     lastAttemptChannel = null;
     lastAttemptAt = 0;
 
-    const message = previous
-        ? `Stopped following ${previous}`
+    const message = oldId
+        ? `Stopped following ${getUsername(String(oldId))}`
         : "Not following anyone";
 
     setStatus(message);
     return message;
 }
 
-/**
- * Subscribe to the legacy runtime's internal Flux and voice-state store.
- * These APIs are version-dependent; missing APIs are logged instead of
- * throwing during plugin startup.
- */
+/* PermissionViewer-style profile menu integration */
+
+function getMainItems(result: any): any[] | null {
+    let items = result?.props?.items;
+
+    if (Array.isArray(items) && Array.isArray(items[0])) {
+        return items[0];
+    }
+
+    items = result?.props?.children?.props?.items;
+
+    if (Array.isArray(items) && Array.isArray(items[0])) {
+        return items[0];
+    }
+
+    try {
+        const node = findInReactTree(
+            result,
+            (item: any) =>
+                Array.isArray(item?.props?.items) &&
+                Array.isArray(item.props.items[0])
+        );
+
+        return node?.props?.items?.[0] ?? null;
+    } catch (error) {
+        log(`Menu tree lookup failed: ${String(error)}`);
+        return null;
+    }
+}
+
+function patchProfileMenu(args: any[], result: any): void {
+    if (!running || !result) return;
+
+    const props = args?.[0] ?? {};
+    const userId = props.user?.id;
+
+    if (!userId || String(userId) === ownId()) return;
+
+    const items = getMainItems(result);
+
+    if (!items) {
+        log("Profile menu items not found");
+        return;
+    }
+
+    const id = String(userId);
+    const following =
+        Boolean(storage.enabled) &&
+        String(storage.targetUserId) === id;
+
+    const label = following
+        ? `Following ${getUsername(id)} — tap to unfollow`
+        : "Follow this user";
+
+    const entry = {
+        label,
+        vcFollowAction: true,
+        action: () => {
+            if (
+                storage.enabled &&
+                String(storage.targetUserId) === id
+            ) {
+                stopFollowing();
+            } else {
+                followUser(id);
+            }
+        },
+    };
+
+    const existing = items.findIndex(
+        (item: any) => item?.vcFollowAction === true
+    );
+
+    if (existing >= 0) {
+        items[existing] = entry;
+    } else {
+        items.push(entry);
+    }
+}
+
+function injectProfileButton(): void {
+    let patched = 0;
+
+    for (const name of PROFILE_MENU_NAMES) {
+        const module = probeName(name);
+
+        if (!module || typeof module.default !== "function") {
+            log(`${name} not found`);
+            continue;
+        }
+
+        try {
+            const unpatch = after("default", module, patchProfileMenu);
+
+            if (typeof unpatch === "function") {
+                unpatches.push(unpatch);
+            }
+
+            patched++;
+            log(`Patched ${name}`);
+        } catch (error) {
+            log(`Could not patch ${name}: ${String(error)}`);
+        }
+    }
+
+    if (!patched) {
+        log("No supported profile menu found");
+    }
+}
+
 function startListening(): void {
     const flux = probe("Flux", [
         ["dispatch", "subscribe", "unsubscribe"],
@@ -514,52 +459,41 @@ function startListening(): void {
     ]);
 
     if (typeof flux?.subscribe === "function") {
-        for (const eventName of [
-            "VOICE_STATE_UPDATES",
-            "VOICE_STATE_UPDATE",
-        ]) {
+        for (const event of ["VOICE_STATE_UPDATES", "VOICE_STATE_UPDATE"]) {
             try {
-                flux.subscribe(eventName, onVoiceEvent);
+                flux.subscribe(event, onVoiceEvent);
 
-                disposers.push(() => {
+                unpatches.push(() => {
                     try {
-                        flux.unsubscribe?.(eventName, onVoiceEvent);
+                        flux.unsubscribe?.(event, onVoiceEvent);
                     } catch {}
                 });
-
-                log(`Subscribed to ${eventName}`);
             } catch (error) {
-                log(`Could not subscribe to ${eventName}: ${String(error)}`);
+                log(`Flux subscription failed: ${String(error)}`);
             }
         }
     } else {
-        log("Flux subscription API wasn't found");
+        log("Flux dispatcher unavailable");
     }
 
     const store = voiceStore();
 
     if (typeof store?.addChangeListener === "function") {
         try {
-            const result = store.addChangeListener(onVoiceStoreChanged);
+            const remove = store.addChangeListener(onVoiceStoreChanged);
 
-            disposers.push(
-                typeof result === "function"
-                    ? result
+            unpatches.push(
+                typeof remove === "function"
+                    ? remove
                     : () => {
                         try {
-                            store.removeChangeListener?.(
-                                onVoiceStoreChanged
-                            );
+                            store.removeChangeListener?.(onVoiceStoreChanged);
                         } catch {}
                     }
             );
-
-            log("Voice-state change listener attached");
         } catch (error) {
-            log(`Could not attach voice-state listener: ${String(error)}`);
+            log(`Voice listener failed: ${String(error)}`);
         }
-    } else {
-        log("Voice-state change listener API wasn't found");
     }
 
     if (storage.enabled && storage.targetUserId) {
@@ -568,200 +502,25 @@ function startListening(): void {
         );
 
         if (lastSeenTargetChannel) {
-            pendingFollowDest = lastSeenTargetChannel;
-            queueRetry();
+            tryMoveTo(lastSeenTargetChannel, "resume");
         } else {
-            log("Saved target isn't currently in voice");
+            setStatus(
+                `Waiting for ${getUsername(String(storage.targetUserId))} to join voice`
+            );
         }
-    }
-}
-
-/**
- * Best-effort profile overflow injection.
- *
- * IMPORTANT: This still relies on private component names and prop shapes.
- * It is not a guaranteed Revenge profile-action API.
- */
-function buildFollowEntry(userId: string): any {
-    const followingThis =
-        Boolean(storage.enabled)
-        && String(storage.targetUserId) === String(userId);
-
-    const username = getUsername(userId);
-    const label = followingThis
-        ? `Following ${username} — tap to stop`
-        : "Follow this user";
-
-    const onPress = (): void => {
-        if (followingThis) {
-            stopFollowing();
-        } else {
-            followUser(userId);
-        }
-    };
-
-    const rowModule = probe("ActionSheetRow", [
-        ["ActionSheetRow", "ActionSheetSection"],
-        ["ActionSheetRow"],
-    ]);
-
-    const ActionSheetRow =
-        rowModule?.ActionSheetRow
-        ?? rowModule?.default;
-
-    if (typeof ActionSheetRow === "function") {
-        return React.createElement(ActionSheetRow, {
-            key: "vc-follow-entry",
-            label,
-            onPress,
-        });
-    }
-
-    const RN = ReactNative as any;
-
-    if (!RN?.TouchableOpacity || !RN?.Text) return null;
-
-    return React.createElement(
-        RN.TouchableOpacity,
-        {
-            key: "vc-follow-entry",
-            onPress,
-            style: {
-                flexDirection: "row",
-                alignItems: "center",
-                paddingHorizontal: 16,
-                paddingVertical: 14,
-                borderTopWidth: 0.5,
-                borderTopColor: "rgba(255,255,255,0.08)",
-            },
-        },
-        React.createElement(
-            RN.Text,
-            {
-                style: {
-                    flex: 1,
-                    color: "#FFFFFF",
-                    fontSize: 16,
-                },
-            },
-            label
-        )
-    );
-}
-
-function injectEntry(root: any, entry: any): boolean {
-    if (!root?.props || !entry) return false;
-
-    // Do not mutate the original React element's props. Clone the element
-    // when adding the entry to avoid corrupting shared render output.
-    const children = root.props.children;
-
-    if (Array.isArray(children)) {
-        const hasActionRows = children.some(
-            (child: any) =>
-                child?.props
-                && typeof child.props.onPress === "function"
-        );
-
-        if (hasActionRows) {
-            root.props.children = [...children, entry];
-            return true;
-        }
-
-        for (const child of children) {
-            if (injectEntry(child, entry)) return true;
-        }
-    } else if (children?.props) {
-        if (injectEntry(children, entry)) return true;
-    }
-
-    return false;
-}
-
-function injectProfileButton(): void {
-    const candidates = [
-        "UserProfileContextMenu",
-        "UserProfileOverflowMenu",
-        "ProfileOverflowMenu",
-        "GuildMemberUserContextMenu",
-        "UserContextMenu",
-        "NativeUserContextMenu",
-        "UserProfileBottomSheetContextMenu",
-    ];
-
-    let patched = 0;
-
-    for (const name of candidates) {
-        const mod = probeByName(name);
-        if (!mod) continue;
-
-        const key =
-            typeof mod.default === "function"
-                ? "default"
-                : Object.keys(mod).find(
-                    candidate => typeof mod[candidate] === "function"
-                );
-
-        if (!key) continue;
-
-        try {
-            const unpatch = after(key, mod, (args: any[], result: any) => {
-                if (!running || !result) return;
-
-                const props = args[0] ?? {};
-                const userId = String(
-                    props.userId
-                    ?? props.user?.id
-                    ?? props.member?.userId
-                    ?? props.guildMember?.userId
-                    ?? ""
-                );
-
-                if (!userId || userId === ownId()) return;
-
-                const entry = buildFollowEntry(userId);
-                if (!entry) return;
-
-                injectEntry(result, entry);
-            });
-
-            if (typeof unpatch === "function") {
-                disposers.push(unpatch);
-            }
-
-            patched++;
-            log(`Patched possible profile menu: ${name}`);
-        } catch (error) {
-            log(`Could not patch ${name}: ${String(error)}`);
-        }
-    }
-
-    if (patched === 0) {
-        log(
-            "No known profile menu component resolved; profile button may not appear"
-        );
     }
 }
 
 export default {
-    onLoad(): void {
-        if (storage.enabled === undefined) {
-            storage.enabled = false;
-        }
-
-        if (storage.targetUserId === undefined) {
-            storage.targetUserId = null;
-        }
-
-        if (storage.status === undefined) {
-            storage.status = "Not following";
-        }
+    onLoad() {
+        if (storage.enabled === undefined) storage.enabled = false;
+        if (storage.targetUserId === undefined) storage.targetUserId = null;
+        if (storage.status === undefined) storage.status = "Not following anyone";
 
         running = true;
-        clearPending();
+        cache.clear();
+        pendingFollowDest = null;
         lastAttemptChannel = null;
-        lastAttemptAt = 0;
-        moduleCache.clear();
 
         startListening();
         injectProfileButton();
@@ -769,19 +528,19 @@ export default {
         log("Loaded");
     },
 
-    onUnload(): void {
+    onUnload() {
         running = false;
-        clearPending();
+        pendingFollowDest = null;
 
-        for (const dispose of disposers.splice(0).reverse()) {
+        for (const unpatch of unpatches.splice(0).reverse()) {
             try {
-                dispose();
+                unpatch();
             } catch (error) {
                 log(`Cleanup failed: ${String(error)}`);
             }
         }
 
-        moduleCache.clear();
+        cache.clear();
         log("Unloaded");
     },
 
