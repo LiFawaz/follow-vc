@@ -1,56 +1,121 @@
-const { test } = require("node:test");
-const assert = require("node:assert/strict");
-const fs = require("node:fs");
-const path = require("node:path");
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../dist/vc-follow/index.js'), 'utf8');
+const TARGET = '123456789012345678';
+const ME = '987654321098765432';
+const OTHER = '111111111111111111';
 
-const root = path.join(__dirname, "..");
-const source = fs.readFileSync(path.join(root, "plugins/vc-follow/src/index.ts"), "utf8");
-const manifest = JSON.parse(fs.readFileSync(path.join(root, "plugins/vc-follow/manifest.json"), "utf8"));
-const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-const deploy = fs.readFileSync(path.join(root, ".github/workflows/deploy.yml"), "utf8");
-const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
-
-test("uses the official Revenge Next build toolchain", () => {
-  assert.equal(pkg.scripts.build, "revenge-plugin build");
-  assert.ok(pkg.dependencies["@revenge-mod/plugin-cli"]);
-  assert.ok(pkg.dependencies["@revenge-mod/types"]);
-  assert.ok(!source.includes("@vendetta/"));
-  assert.ok(source.includes("@revenge-mod/modules/finders"));
+function environment() {
+  const channels = {
+    origin: {id:'origin', guild_id:'g1'},
+    next: {id:'next', guild_id:'g1'},
+    next2: {id:'next2',guild_id:'g1'},
+    locked: {id:'locked',guild_id:'g1', locked:true},
+    outside: {id:'outside',guild_id:'g2'},
+  };
+  const moves = []; const commands = {}; const events = new Map();
+  const state = {}; let currentChannel = 'origin';
+  const storeCallbacks = new Set(); const patches=[];
+  const voiceStore = {
+    getVoiceStateForUser: id => state[id],
+    getVoiceStatesForChannel: id => ({}),
+    addChangeListener: cb => {storeCallbacks.add(cb); return () => storeCallbacks.delete(cb);},
+    removeChangeListener: cb => storeCallbacks.delete(cb),
+  };
+  const selectedStore = {getVoiceChannelId:()=>currentChannel};
+  const channelStore = {getChannel:id => channels[id]};
+  const userStore = {getCurrentUser:()=>({id:ME})};
+  const permissionStore = {can:(permission, channel) => !channel.locked};
+  const actions = {selectVoiceChannel:id => {moves.push(id); currentChannel=id}};
+  const dispatcher = {
+    subscribe: (name,cb) => { if (!events.has(name)) events.set(name,new Set()); events.get(name).add(cb); },
+    unsubscribe: (name,cb) => events.get(name)?.delete(cb),
+    dispatch: (payload) => { for (const cb of events.get(payload.type)??[]) cb(payload); },
+  };
+  let profileActions = { getUserProfileActions(user) { return [{id:'unrelated'}]; } };
+  const modules = [voiceStore,selectedStore,channelStore,userStore,permissionStore,actions,dispatcher,profileActions];
+  const storage = {};
+  const vendetta = {
+    logger: {log() {}},
+    metro: {
+      findByProps: (...props) => modules.find(mod => props.every(prop => typeof mod[prop] !== 'undefined')),
+      common: {React: {createElement: () => null, useState: init => [init,()=>{}]},ReactNative: {}},
+    },
+    commands: {registerCommand: command => {commands[command.name]=command;return()=>delete commands[command.name];}},
+    plugin: {storage},
+    patcher: {after: (key, module, callback) => {
+      const old = module[key];
+      module[key] = (...args) => callback(args,old(...args));
+      patches.push(()=>{module[key] = old;});
+      return patches.at(-1);
+    }},
+    storage: {useProxy: () => {}},
+  };
+  const result = new Function('vendetta','return ' + source)(vendetta);
+  const plugin = result.default;
+  return {plugin,storage,commands,moves,events,storeCallbacks,
+    profileActions,
+    emit: (userId, channelId, oldChannelId) => {
+      state[userId] = {userId,channelId,oldChannelId};
+      dispatcher.dispatch({type:'VOICE_STATE_UPDATES', voiceStates:[{userId,channelId,oldChannelId}]});
+      for (const cb of [...storeCallbacks]) cb();
+    },
+    setCurrentChannel: id => {currentChannel=id;},
+    getCurrentChannel: () => currentChannel,
+    patchCount: ()=>patches.length,
+  };
+}
+test('registers /vcf and /vcunf; follows transitions in same guild', () => {
+  const m = environment(); m.plugin.onLoad();
+  assert.ok(m.commands.vcf); assert.ok(m.commands.vcunf);
+  assert.equal(m.commands.vcf.execute([{name:'user',value:TARGET}]).send,false);
+  assert.equal(m.storage.targetUserId,TARGET);
+  m.emit(TARGET,'next','origin');
+  assert.deepEqual(m.moves,['next']);
+  m.emit(TARGET,'next','next');
+  assert.deepEqual(m.moves,['next']);
+  m.emit(TARGET,'next2','next');
+  assert.deepEqual(m.moves,['next','next2']);
+  m.commands.vcunf.execute([]);
+  assert.equal(m.storage.enabled,false);
+  m.emit(TARGET,'origin','next2');
+  assert.deepEqual(m.moves,['next','next2']);
+  m.plugin.onUnload();
+  assert.equal(m.commands.vcf,undefined);
+  assert.equal(m.events.get('VOICE_STATE_UPDATES').size,0);
+  assert.equal(m.storeCallbacks.size,0);
 });
-
-test("has a valid native Revenge Next manifest", () => {
-  assert.equal(manifest.format, 1);
-  assert.equal(manifest.dist.script, "index.js");
-  assert.match(manifest.version, /^\d+(\.\d+)*(?:-[a-z0-9]+)?$/);
-  assert.ok(manifest.dependencies["revenge.api"]);
-  assert.ok(manifest.dependencies.discord);
+test('does not follow other users, locked channels, or another server', () => {
+  const m=environment();m.plugin.onLoad();
+  m.commands.vcf.execute([{name:'user',value:TARGET}]);
+  m.emit(OTHER,'next','origin');
+  m.emit(TARGET,'locked','origin');
+  m.emit(TARGET,'outside','locked');
+  assert.deepEqual(m.moves,[]);
+  m.plugin.onUnload();
 });
-
-test("implements profile follow toggle and removes slash-command registration", () => {
-  assert.ok(source.includes("function patchProfileMenus("));
-  assert.ok(source.includes("function profileButton("));
-  assert.ok(source.includes("Follow this user"));
-  assert.ok(source.includes("Stop following"));
-  assert.ok(source.includes("apiRef?.unscoped?.patcher"));
-  assert.ok(!source.includes("function registerCommands("));
-  assert.ok(!source.includes("registerCommand"));
+test('friend leaves VC does not force disconnection; profile action can toggle follow', () => {
+  const m=environment();m.plugin.onLoad();
+  const actions=m.profileActions.getUserProfileActions({id:TARGET});
+  const follow=actions.find(x=>x.id==='vc-follow-profile');
+  assert.equal(follow.label,'Follow VC');
+  follow.onPress();
+  assert.equal(m.storage.targetUserId,TARGET);
+  m.emit(TARGET,'next','origin');
+  assert.deepEqual(m.moves,['next']);
+  m.emit(TARGET,null,'next');
+  assert.deepEqual(m.moves,['next']);
+  m.plugin.onUnload();
 });
-
-test("follows target voice changes and retries pending full channels", () => {
-  assert.ok(source.includes("function onVoiceUpdate("));
-  assert.ok(source.includes("function onVoiceStoreChanged("));
-  assert.ok(source.includes("pendingChannel"));
-  assert.ok(source.includes("capacity freed"));
-  assert.ok(source.includes("selectVoiceChannel"));
-  assert.ok(source.includes("lastAttemptChannel = null"));
-  assert.ok(source.includes("function stopFollowing("));
-});
-
-test("persists follow state and documents fallback behavior", () => {
-  assert.ok(source.includes("jsonStorage"));
-  assert.ok(source.includes("targetUserId"));
-  assert.ok(readme.includes("Stop following username"));
-  assert.ok(readme.includes("settings fallback"));
-  assert.ok(deploy.includes("pnpm run build"));
-  assert.ok(deploy.includes("revenge-plugin generate-index"));
+test('rejects invalid targets and does not follow unless already in VC', () => {
+  const m=environment();m.plugin.onLoad();
+  const invalid=m.commands.vcf.execute([{name:'user',value:'oops'}]);
+  assert.match(invalid.result,/valid Discord user ID/);
+  m.commands.vcf.execute([{name:'user',value:TARGET}]);
+  m.setCurrentChannel(null);
+  m.emit(TARGET,'next','origin');
+  assert.deepEqual(m.moves,[]);
+  m.plugin.onUnload();
 });
