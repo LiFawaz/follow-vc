@@ -1,8 +1,8 @@
-name: Build and Deploy Revenge Plugin Repository
+name: Build and Deploy VC Follow
 
 on:
   push:
-    branches: [main, "fix/**"]
+    branches: [main]
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -13,14 +13,12 @@ permissions:
   id-token: write
 
 concurrency:
-  group: "pages"
+  group: pages
   cancel-in-progress: false
 
 jobs:
-  validate-and-build:
+  build-and-test:
     runs-on: ubuntu-latest
-    env:
-      npm_config_legacy_peer_deps: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -34,42 +32,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --no-frozen-lockfile
 
-      - name: Run tests
+      - name: Build plugin
+        run: pnpm build
+
+      - name: Test plugin
         run: pnpm test
-
-      - name: Compile Revenge plugin CLI
-        run: pnpm --dir node_modules/@revenge-mod/plugin-cli run build
-
-      - name: Build Revenge Next plugin
-        run: pnpm run build
-
-      - name: Package plugin and generate repository index
-        if: github.event_name != 'pull_request'
-        shell: bash
-        run: |
-          set -euo pipefail
-          ID="$(node -p "require('./plugins/vc-follow/manifest.json').id")"
-          VERSION="$(node -p "require('./plugins/vc-follow/manifest.json').version")"
-          mkdir -p "dist/pool" package
-          test -s "plugins/vc-follow/build/js/index.js"
-          cp "plugins/vc-follow/manifest.json" package/manifest.json
-          cp "plugins/vc-follow/build/js/index.js" package/index.js
-          (cd package && zip -q "../dist/pool/${ID}@${VERSION}.zip" manifest.json index.js)
-
-          # Keep the previous direct-manifest URL working for existing installs.
-          mkdir -p dist/vc-follow
-          cp "plugins/vc-follow/manifest.json" dist/vc-follow/manifest.json
-          cp "plugins/vc-follow/build/js/index.js" dist/vc-follow/index.js
-          pnpm exec revenge-plugin generate-index \
-            --dist dist/pool \
-            --base-url "https://kkssmm918839-crypto.github.io/follow-vc/pool" \
-            --out dist/index.json
-          test -s dist/index.json
-          node -e "const i=require('./dist/index.json'); if(i.format!==1 || !i.plugins['dev.community.vc-follow']) process.exit(1)"
 
       - name: Upload Pages artifact
         if: github.event_name != 'pull_request'
@@ -79,7 +51,7 @@ jobs:
 
   deploy:
     if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: validate-and-build
+    needs: build-and-test
     runs-on: ubuntu-latest
     environment:
       name: github-pages
