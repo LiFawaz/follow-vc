@@ -1,6 +1,5 @@
 
-import { logger } from "@revenge-mod/core";
-import { findByProps, findByName } from "@revenge-mod/metro";
+import { findByProps, findByName } from "@revenge-mod/modules/finders";
 import { after } from "@revenge-mod/patcher";
 
 const MENU_NAMES = [
