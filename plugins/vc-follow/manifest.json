@@ -1,19 +1,14 @@
 {
-  "format": 1,
-  "id": "dev.community.vc-follow",
   "name": "VC Follow",
-  "description": "Follow a user between voice channels.",
-  "author": "Li Fawaz (https://github.com/kkssmm918839-crypto)",
-  "version": "1.3.1",
-  "dependencies": {
-    "revenge.api": {
-      "version": ">=1 <2"
-    },
-    "discord": {
-      "version": "*"
+  "description": "Auto-follow a friend between voice channels, including cross-server. /vcf <id> · /vcunf · long-press any user → Follow.",
+  "authors": [
+    {
+      "name": "Li Fawaz",
+      "id": "1330929142643818516"
     }
-  },
-  "dist": {
-    "script": "index.js"
+  ],
+  "main": "src/index.ts",
+  "vendetta": {
+    "icon": "ic_voice_channel"
   }
 }
