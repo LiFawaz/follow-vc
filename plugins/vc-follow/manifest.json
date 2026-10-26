@@ -2,16 +2,12 @@
   "format": 1,
   "id": "dev.community.vc-follow",
   "name": "VC Follow",
+  "description": "Follow a user between voice channels and retry when full.",
   "author": "Li Fawaz",
-  "description": "Follow a user between voice channels, with persistent following and retries when a channel is full.",
   "version": "1.2.0",
   "dependencies": {
-    "revenge.api": {
-      "version": ">=1 <2"
-    },
-    "discord": {
-      "version": "*"
-    }
+    "revenge.api": { "version": ">=1" },
+    "discord": { "version": "*" }
   },
   "dist": {
     "script": "index.js"
