@@ -1,6 +1,6 @@
 {
   "name": "VC Follow",
-  "description": "Auto-follow a friend between voice channels, including cross-server. /vcf <id> · /vcunf · long-press any user → Follow.",
+  "description": "Auto-follow a friend between voice channels — including cross-server. Adds a Follow button to every user's profile overflow menu. Waits for full channels to open. Never stops following unless you say so.",
   "authors": [
     {
       "name": "Li Fawaz",
