@@ -1,14 +1,12 @@
 {
+  "id": "dev.community.vc-follow",
   "name": "VC Follow",
-  "description": "Auto-follow a friend between voice channels — including cross-server. Adds a Follow button to every user's profile overflow menu. Waits for full channels to open. Never stops following unless you say so.",
+  "description": "Follow a friend between voice channels. Tap Follow VC on their profile. Retries when full. Follows forever until you stop it.",
+  "version": "1.1.0",
+  "format": 1,
   "authors": [
     {
-      "name": "Li Fawaz",
-      "id": "1330929142643818516"
+      "name": "Li Fawaz"
     }
-  ],
-  "main": "src/index.ts",
-  "vendetta": {
-    "icon": "ic_voice_channel"
-  }
+  ]
 }
