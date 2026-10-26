@@ -1,598 +1,786 @@
+
 /**
- * VC Follow — Revenge plugin (Vendetta-compatible)
- * Follows a friend between voice channels — including across different servers.
- * Adds a dynamic "Follow / Following" entry to every user's profile overflow menu.
+ * VC Follow — Vendetta-compatible plugin
+ *
+ * Follows one user between voice channels, including across servers.
+ * Persists the selected target until the user unfollows or switches target.
+ * Retries joining a full voice channel when voice state changes.
  *
  * Author: Li Fawaz
+ *
+ * Compatibility note:
+ * This file uses the legacy @vendetta/* API expected by the original
+ * project. It is NOT a native @revenge-mod/* plugin migration.
  */
-import { logger }                  from "@vendetta";
+
+import { logger } from "@vendetta";
 import { findByProps, findByName } from "@vendetta/metro";
-import { React, ReactNative }      from "@vendetta/metro/common";
-import { after }                   from "@vendetta/patcher";
-import { storage }                 from "@vendetta/plugin";
-import Settings                    from "./Settings";
+import { React, ReactNative } from "@vendetta/metro/common";
+import { after } from "@vendetta/patcher";
+import { storage } from "@vendetta/plugin";
+import Settings from "./Settings";
 
-// ── Permission bitmasks (Discord channel permission flags) ────────────────────
-const PERM_CONNECT      = 1n << 20n;  // USER_LIMIT gate
-const PERM_MOVE_MEMBERS = 1n << 24n;  // can always bypass user-limit
+const PERM_CONNECT = 1n << 20n;
+const PERM_MOVE_MEMBERS = 1n << 24n;
 
-// ── Global state ──────────────────────────────────────────────────────────────
-const disposers:   Array<() => void> = [];
-const moduleCache: Map<string, any>  = new Map();
+const disposers: Array<() => void> = [];
+const moduleCache = new Map<string, any>();
 
-let running              = false;
-
-/** Last channel ID we saw the target occupying. */
+let running = false;
 let lastSeenTargetChannel: string | null = null;
-
-/** Debounce: last channel ID we called selectVoiceChannel for. */
 let lastAttemptChannel: string | null = null;
-
-/** Debounce: epoch-ms of the last selectVoiceChannel call. */
 let lastAttemptAt = 0;
-
-/**
- * When the target's channel is full we park the destination here.
- * Every subsequent voice-state-store change (anyone moving in/out of any VC)
- * retries this until a slot opens or the target moves on their own.
- */
 let pendingFollowDest: string | null = null;
+let retryQueued = false;
 
-const DEBOUNCE_MS = 2_500;
+const DEBOUNCE_MS = 2500;
 
-// ── Logging ───────────────────────────────────────────────────────────────────
-
-function log(msg: string): void {
-    try { logger.log(`[VC Follow] ${msg}`); } catch (_) {}
+function log(message: string): void {
+    try {
+        logger.log(`[VC Follow] ${message}`);
+    } catch {}
 }
 
-function setStatus(msg: string): void {
-    storage.status = msg;
-    log(msg);
+function setStatus(message: string): void {
+    storage.status = message;
+    log(message);
 }
 
-// ── Module resolution (memoised) ──────────────────────────────────────────────
-// Discord's internal prop names shift between builds; we probe multiple
-// candidate key sets per module and cache the first hit.
-
-function probe(label: string, options: string[][]): any {
-    if (moduleCache.has(label)) return moduleCache.get(label);
-    for (const keys of options) {
-        try {
-            const m = findByProps(...keys);
-            if (m) { moduleCache.set(label, m); return m; }
-        } catch (_) {}
+function probe(label: string, candidates: string[][]): any {
+    if (moduleCache.has(label)) {
+        return moduleCache.get(label);
     }
+
+    for (const keys of candidates) {
+        try {
+            const result = findByProps(...keys);
+            if (result) {
+                moduleCache.set(label, result);
+                return result;
+            }
+        } catch {}
+    }
+
     return null;
 }
 
 function probeByName(name: string): any {
-    if (moduleCache.has(name)) return moduleCache.get(name);
+    if (moduleCache.has(`name:${name}`)) {
+        return moduleCache.get(`name:${name}`);
+    }
+
     try {
-        const m = findByName(name, false); // false → return the module, not just .default
-        if (m) { moduleCache.set(name, m); return m; }
-    } catch (_) {}
+        const result = findByName(name, false);
+        if (result) {
+            moduleCache.set(`name:${name}`, result);
+            return result;
+        }
+    } catch {}
+
     return null;
 }
 
-// ── Store accessors ───────────────────────────────────────────────────────────
+function voiceStore(): any {
+    return probe("VoiceStateStore", [
+        ["getVoiceStateForUser", "getVoiceStatesForChannel"],
+        ["getVoiceStateForUser"],
+        ["getAllVoiceStates"],
+    ]);
+}
 
-const voiceStore = (): any => probe("VoiceStateStore", [
-    ["getVoiceStateForUser", "getVoiceStatesForChannel"],
-    ["getVoiceStateForUser"],
-    ["getAllVoiceStates"],
-]);
+function channelStore(): any {
+    return probe("ChannelStore", [
+        ["getChannel", "getDMFromUserId"],
+        ["getChannel"],
+    ]);
+}
 
-const channelStore = (): any => probe("ChannelStore", [
-    ["getChannel", "getDMFromUserId"],
-    ["getChannel"],
-]);
+function userStore(): any {
+    return probe("UserStore", [
+        ["getCurrentUser", "getUser"],
+        ["getCurrentUser"],
+    ]);
+}
 
-const userStore = (): any => probe("UserStore", [
-    ["getCurrentUser", "getUser"],
-    ["getCurrentUser"],
-]);
+function permissionStore(): any {
+    return probe("PermissionStore", [
+        ["can", "canWithPartialContext"],
+        ["can"],
+    ]);
+}
 
-const permStore = (): any => probe("PermissionStore", [
-    ["can", "canWithPartialContext"],
-    ["can"],
-]);
-
-const voiceActions = (): any => probe("VoiceActions", [
-    ["selectVoiceChannel", "disconnect"],
-    ["selectVoiceChannel"],
-]);
-
-// ── Utilities ─────────────────────────────────────────────────────────────────
+function voiceActions(): any {
+    return probe("VoiceActions", [
+        ["selectVoiceChannel", "disconnect"],
+        ["selectVoiceChannel"],
+    ]);
+}
 
 function ownId(): string | null {
-    try { return userStore()?.getCurrentUser?.()?.id ?? null; } catch (_) { return null; }
+    try {
+        return userStore()?.getCurrentUser?.()?.id ?? null;
+    } catch {
+        return null;
+    }
 }
 
-/** Resolve a user's display name from the user store. */
 function getUsername(userId: string): string {
     try {
-        const u = userStore()?.getUser?.(userId);
-        if (!u) return userId;
-        // Discord's new username system uses globalName; fall back to legacy username.
-        return (u.globalName ?? u.displayName ?? u.username ?? userId) as string;
-    } catch (_) { return userId; }
+        const user = userStore()?.getUser?.(userId);
+        return user?.globalName
+            ?? user?.displayName
+            ?? user?.username
+            ?? userId;
+    } catch {
+        return userId;
+    }
 }
 
-/** Accept raw snowflakes or <@12345> / <@!12345> mention syntax. */
 function normalizeUserId(raw: unknown): string | null {
-    const s = String(raw ?? "").trim();
-    const m = /^(?:<@!?)?(\d{15,22})>?$/.exec(s);
-    return m?.[1] ?? null;
+    const match = /^(?:<@!?)?(\d{15,22})>?$/.exec(
+        String(raw ?? "").trim()
+    );
+    return match?.[1] ?? null;
 }
 
-/** Channel ID of the VC the target user is currently in, or null. */
-function getUserVoiceChannel(userId: string): string | null {
-    const vs = voiceStore();
-    if (!vs) return null;
-    try {
-        // Fast path: direct per-user lookup (most builds).
-        const state = vs.getVoiceStateForUser?.(userId);
-        if (state) return state.channelId ?? state.channel_id ?? null;
+function extractChannelId(state: any): string | null {
+    const value = state?.channelId ?? state?.channel_id ?? null;
+    return value == null ? null : String(value);
+}
 
-        // Slow path: iterate all guilds (cross-server safety net).
-        const all = vs.getAllVoiceStates?.();
+function getUserVoiceChannel(userId: string): string | null {
+    const store = voiceStore();
+    if (!store) return null;
+
+    try {
+        const direct = store.getVoiceStateForUser?.(userId);
+        if (direct) return extractChannelId(direct);
+
+        const all = store.getAllVoiceStates?.();
         if (all && typeof all === "object") {
             for (const group of Object.values(all) as any[]) {
-                const s = (group as any)?.[userId];
-                if (s) return s.channelId ?? s.channel_id ?? null;
+                if (!group || typeof group !== "object") continue;
+
+                const state = group[userId];
+                if (state) return extractChannelId(state);
             }
         }
-    } catch (_) {}
+    } catch (error) {
+        log(`Could not read voice state: ${String(error)}`);
+    }
+
     return null;
 }
 
-/** Channel ID we are currently in, or null. */
 function getOwnVoiceChannel(): string | null {
     const selected = probe("SelectedChannelStore", [
         ["getVoiceChannelId"],
         ["getCurrentVoiceChannelId"],
     ]);
+
     try {
-        return selected?.getVoiceChannelId?.()
+        const value =
+            selected?.getVoiceChannelId?.()
             ?? selected?.getCurrentVoiceChannelId?.()
             ?? null;
-    } catch (_) { return null; }
+
+        return value == null ? null : String(value);
+    } catch {
+        return null;
+    }
 }
 
-// ── Permission / capacity checks ──────────────────────────────────────────────
+function can(channel: any, permission: bigint): boolean {
+    const store = permissionStore();
 
-function can(channel: any, perm: bigint): boolean {
-    const ps = permStore();
-    // If we can't find the permission store, assume yes — optimistically attempt the join.
-    if (!ps || typeof ps.can !== "function") return true;
+    // Unknown permission status is not proof that joining is permitted.
+    if (!store || typeof store.can !== "function") return true;
+
     try {
-        return !!ps.can(perm, channel);
-    } catch (_) {
+        return !!store.can(permission, channel);
+    } catch {
         try {
-            // Some builds pass the permission as a string or plain number.
-            return !!ps.can(Number(perm), channel);
-        } catch (_) { return true; }
+            return !!store.can(Number(permission), channel);
+        } catch {
+            return true;
+        }
     }
+}
+
+function countVoiceMembers(channelId: string): number | null {
+    try {
+        const states = voiceStore()?.getVoiceStatesForChannel?.(channelId);
+        if (!states) return null;
+
+        if (typeof states.size === "number") return states.size;
+        if (Array.isArray(states)) return states.length;
+
+        if (typeof states === "object") {
+            return Object.keys(states).length;
+        }
+    } catch {}
+
+    return null;
 }
 
 function channelHasSpace(channel: any, channelId: string): boolean {
-    const limit = Number(channel.userLimit ?? channel.user_limit ?? 0);
-    if (!limit || !Number.isFinite(limit)) return true; // unlimited
+    const limit = Number(channel?.userLimit ?? channel?.user_limit ?? 0);
 
-    // MOVE_MEMBERS holders bypass the user limit.
+    if (!Number.isFinite(limit) || limit <= 0) return true;
     if (can(channel, PERM_MOVE_MEMBERS)) return true;
 
-    try {
-        const states = voiceStore()?.getVoiceStatesForChannel?.(channelId);
-        if (!states) return true;
-        const count =
-            typeof states.size === "number" ? states.size       // Map
-            : Array.isArray(states)          ? states.length    // Array
-            : typeof states === "object"     ? Object.keys(states).length
-            : 0;
-        return count < limit;
-    } catch (_) { return true; }
+    const count = countVoiceMembers(channelId);
+
+    // If the member count is unknown, attempt the join and let Discord
+    // enforce its own permissions and channel capacity.
+    if (count === null) return true;
+
+    return count < limit;
 }
 
-// ── Core join logic ───────────────────────────────────────────────────────────
+function clearPending(): void {
+    pendingFollowDest = null;
+    retryQueued = false;
+}
 
 function tryMoveTo(destinationId: string, source: string): void {
-    if (!running || !storage.enabled || !storage.targetUserId || !destinationId) return;
-
-    // Already there — nothing to do.
-    if (getOwnVoiceChannel() === destinationId) {
-        pendingFollowDest = null;
-        setStatus(`Already in ${storage.targetUserId}'s channel`);
+    if (
+        !running
+        || !storage.enabled
+        || !storage.targetUserId
+        || !destinationId
+    ) {
         return;
     }
 
-    // Debounce — never hammer the same channel within the debounce window.
-    if (lastAttemptChannel === destinationId && Date.now() - lastAttemptAt < DEBOUNCE_MS) return;
+    const targetId = String(storage.targetUserId);
 
-    const dest = channelStore()?.getChannel?.(destinationId);
-
-    if (dest) {
-        // No connect permission — don't wait, just bail.
-        if (!can(dest, PERM_CONNECT)) {
-            pendingFollowDest = null;
-            setStatus("Can't follow: no permission to connect to that voice channel");
-            return;
-        }
-        // Channel is full — queue for when a slot opens.
-        if (!channelHasSpace(dest, destinationId)) {
-            pendingFollowDest = destinationId;
-            setStatus(
-                `Voice channel is full — waiting for a slot or for ` +
-                `${storage.targetUserId} to move`
-            );
-            return;
-        }
+    // Do not join an outdated destination after the target has moved again.
+    const actualTargetChannel = getUserVoiceChannel(targetId);
+    if (
+        actualTargetChannel
+        && actualTargetChannel !== destinationId
+    ) {
+        pendingFollowDest = actualTargetChannel;
+        queueRetry();
+        return;
     }
 
-    // For cross-server channels the store may be cold (channel not cached yet).
-    // We still attempt the join; Discord's own routing handles the rest.
+    if (getOwnVoiceChannel() === destinationId) {
+        clearPending();
+        setStatus(`Already in ${getUsername(targetId)}'s voice channel`);
+        return;
+    }
+
+    const now = Date.now();
+    if (
+        lastAttemptChannel === destinationId
+        && now - lastAttemptAt < DEBOUNCE_MS
+    ) {
+        // Keep the pending destination so a later voice-state change can
+        // retry it after the debounce window has expired.
+        pendingFollowDest = destinationId;
+        return;
+    }
+
+    const destination = channelStore()?.getChannel?.(destinationId);
+
+    if (destination && !can(destination, PERM_CONNECT)) {
+        clearPending();
+        setStatus("Can't follow: no permission to connect to that channel");
+        return;
+    }
+
+    if (
+        destination
+        && !channelHasSpace(destination, destinationId)
+    ) {
+        pendingFollowDest = destinationId;
+        setStatus(
+            `Voice channel is full — waiting for a slot for ${getUsername(targetId)}`
+        );
+        return;
+    }
 
     const actions = voiceActions();
     if (typeof actions?.selectVoiceChannel !== "function") {
-        setStatus("Voice switching unavailable on this Discord build");
+        pendingFollowDest = destinationId;
+        setStatus("Voice switching API wasn't found on this Discord build");
         return;
     }
 
-    pendingFollowDest  = null;
+    pendingFollowDest = null;
     lastAttemptChannel = destinationId;
-    lastAttemptAt      = Date.now();
+    lastAttemptAt = now;
+
     try {
         actions.selectVoiceChannel(destinationId);
-        const chName  = dest?.name ?? destinationId;
-        const guildId = dest?.guild_id ?? "cross-server";
-        setStatus(`Following ${storage.targetUserId} → #${chName} [${guildId}] (${source})`);
-    } catch (err) {
-        setStatus(`VC join failed: ${String(err)}`);
+
+        const channelName = destination?.name ?? destinationId;
+        setStatus(
+            `Following ${getUsername(targetId)} in ${channelName} (${source})`
+        );
+    } catch (error) {
+        pendingFollowDest = destinationId;
+        setStatus(`Voice join failed: ${String(error)}`);
     }
 }
 
-// ── Pending-channel retry helper ──────────────────────────────────────────────
-// Called from both event handlers so the retry works regardless of which
-// fires first (Flux event vs. store change).
+function queueRetry(): void {
+    if (retryQueued || !running) return;
+    retryQueued = true;
+
+    // A short defer allows Discord's store to process the current dispatch
+    // before we query the target and destination again.
+    Promise.resolve().then(() => {
+        retryQueued = false;
+        retryPending();
+    });
+}
 
 function retryPending(): void {
-    if (!pendingFollowDest || !running || !storage.enabled) return;
-    const dest = channelStore()?.getChannel?.(pendingFollowDest);
-    if (dest && channelHasSpace(dest, pendingFollowDest)) {
-        tryMoveTo(pendingFollowDest, "capacity freed");
+    if (
+        !running
+        || !storage.enabled
+        || !storage.targetUserId
+    ) {
+        return;
     }
-}
 
-// ── Flux event handler ────────────────────────────────────────────────────────
+    const targetId = String(storage.targetUserId);
+    const currentTargetChannel = getUserVoiceChannel(targetId);
+
+    // The target may have switched channels while we were waiting.
+    if (
+        currentTargetChannel
+        && currentTargetChannel !== pendingFollowDest
+    ) {
+        pendingFollowDest = currentTargetChannel;
+    }
+
+    if (!currentTargetChannel) {
+        // Continue following; a later voice event will resume it.
+        return;
+    }
+
+    if (!pendingFollowDest) return;
+
+    const destination = channelStore()?.getChannel?.(pendingFollowDest);
+    if (
+        destination
+        && !channelHasSpace(destination, pendingFollowDest)
+    ) {
+        return;
+    }
+
+    tryMoveTo(pendingFollowDest, "retry");
+}
 
 function onVoiceEvent(payload: any): void {
     if (!running || !payload) return;
 
-    const updates: any[] = (
-        Array.isArray(payload.voiceStates)   ? payload.voiceStates   :
-        Array.isArray(payload.voice_states)  ? payload.voice_states  :
-        payload.voiceState                   ? [payload.voiceState]  :
-        [payload]
-    );
+    const updates: any[] =
+        Array.isArray(payload.voiceStates) ? payload.voiceStates
+        : Array.isArray(payload.voice_states) ? payload.voice_states
+        : payload.voiceState ? [payload.voiceState]
+        : [payload];
+
+    const targetId = storage.targetUserId
+        ? String(storage.targetUserId)
+        : null;
 
     for (const state of updates) {
         if (!state) continue;
-        const userId     = String(state.userId ?? state.user_id ?? "");
-        const channelId  = state.channelId ?? state.channel_id ?? null;
 
-        if (userId === String(storage.targetUserId)) {
-            const prev = lastSeenTargetChannel;
-            lastSeenTargetChannel = channelId;
+        const userId = String(state.userId ?? state.user_id ?? "");
+        if (!targetId || userId !== targetId) continue;
 
-            if (!channelId) {
-                // Target disconnected. Keep following — we resume when they rejoin.
-                setStatus("Friend left voice — will follow when they rejoin a VC");
-            } else if (channelId !== prev) {
-                tryMoveTo(channelId, "voice event");
-            }
+        const channelId = extractChannelId(state);
+        lastSeenTargetChannel = channelId;
+
+        if (!channelId) {
+            setStatus(
+                `Waiting for ${getUsername(targetId)} to rejoin voice`
+            );
+            continue;
         }
+
+        pendingFollowDest = channelId;
+        queueRetry();
     }
 
-    // NOTE: Flux fires before the store updates, so channelHasSpace may read
-    // stale data here. The definitive capacity retry happens in onVoiceStoreChanged
-    // (below) which fires after the store has processed the same event.
-    retryPending();
+    // Other users leaving a channel may free a slot for the target.
+    queueRetry();
 }
-
-// ── Voice-state store change handler ─────────────────────────────────────────
-// This fires AFTER the VoiceStateStore has applied the latest batch, so its
-// data is always fresh. It's the reliable path for detecting freed capacity.
 
 function onVoiceStoreChanged(): void {
-    if (!running || !storage.enabled || !storage.targetUserId) return;
+    if (
+        !running
+        || !storage.enabled
+        || !storage.targetUserId
+    ) {
+        return;
+    }
 
-    const current = getUserVoiceChannel(storage.targetUserId);
+    const targetId = String(storage.targetUserId);
+    const currentChannel = getUserVoiceChannel(targetId);
 
-    if (current !== lastSeenTargetChannel) {
-        lastSeenTargetChannel = current;
-        if (current) {
-            tryMoveTo(current, "store change");
+    if (currentChannel !== lastSeenTargetChannel) {
+        lastSeenTargetChannel = currentChannel;
+
+        if (currentChannel) {
+            pendingFollowDest = currentChannel;
         } else {
-            setStatus("Friend left voice — will follow when they rejoin a VC");
+            setStatus(
+                `Waiting for ${getUsername(targetId)} to rejoin voice`
+            );
         }
     }
 
-    // !! This is the critical fix for the full-channel waiting bug:
-    // We retry the pending destination on EVERY store change (not only when
-    // the target moved). When someone leaves the full channel, the store
-    // updates their departure, this fires, and we finally see free capacity.
-    retryPending();
+    // This path also runs when someone else leaves a full channel.
+    queueRetry();
 }
-
-// ── Public API (used by Settings.tsx and the profile button) ──────────────────
 
 export function followUser(rawId: unknown): string {
     const id = normalizeUserId(rawId);
-    if (!id) return "Invalid user ID — needs to be a 15-22 digit Discord snowflake.";
-    if (id === ownId()) return "You can't follow yourself.";
 
-    const wasFollowing = storage.enabled && storage.targetUserId;
-    storage.targetUserId  = id;
-    storage.enabled       = true;
-    pendingFollowDest     = null;
-    lastAttemptChannel    = null;
+    if (!id) {
+        return "Invalid user ID. Expected a 15–22 digit Discord ID.";
+    }
+
+    if (id === ownId()) {
+        return "You can't follow yourself.";
+    }
+
+    const previous = storage.enabled
+        ? String(storage.targetUserId ?? "")
+        : "";
+
+    storage.targetUserId = id;
+    storage.enabled = true;
+
+    clearPending();
+    lastAttemptChannel = null;
+    lastAttemptAt = 0;
     lastSeenTargetChannel = getUserVoiceChannel(id);
 
-    const prefix = wasFollowing && wasFollowing !== id
-        ? `Switched from ${wasFollowing} → ${id}`
-        : `Following ${id}`;
+    const prefix = previous && previous !== id
+        ? `Switched to following ${getUsername(id)}`
+        : `Following ${getUsername(id)}`;
 
     if (lastSeenTargetChannel) {
+        pendingFollowDest = lastSeenTargetChannel;
         tryMoveTo(lastSeenTargetChannel, "follow start");
-        return `${prefix} — joining their channel now`;
+        return `${prefix} — attempting to join their channel`;
     }
-    setStatus(`Waiting for ${id} to enter a voice channel…`);
-    return `${prefix} — will join when they enter a VC`;
+
+    setStatus(
+        `Waiting for ${getUsername(id)} to enter a voice channel`
+    );
+
+    return `${prefix} — will follow when they join voice`;
 }
 
 export function stopFollowing(): string {
-    const was = storage.targetUserId;
-    storage.enabled      = false;
+    const previous = storage.targetUserId
+        ? String(storage.targetUserId)
+        : null;
+
+    storage.enabled = false;
     storage.targetUserId = null;
-    pendingFollowDest    = null;
+
+    clearPending();
     lastSeenTargetChannel = null;
-    lastAttemptChannel   = null;
-    const msg = was ? `Stopped following ${was}` : "Not following anyone";
-    setStatus(msg);
-    return msg;
+    lastAttemptChannel = null;
+    lastAttemptAt = 0;
+
+    const message = previous
+        ? `Stopped following ${previous}`
+        : "Not following anyone";
+
+    setStatus(message);
+    return message;
 }
 
-// ── Listener setup ────────────────────────────────────────────────────────────
-
+/**
+ * Subscribe to the legacy runtime's internal Flux and voice-state store.
+ * These APIs are version-dependent; missing APIs are logged instead of
+ * throwing during plugin startup.
+ */
 function startListening(): void {
-    // Flux dispatcher — VOICE_STATE_UPDATES fires for every VC state change.
     const flux = probe("Flux", [
         ["dispatch", "subscribe", "unsubscribe"],
         ["subscribe", "unsubscribe"],
     ]);
-    if (flux?.subscribe) {
-        for (const ev of ["VOICE_STATE_UPDATES", "VOICE_STATE_UPDATE"]) {
+
+    if (typeof flux?.subscribe === "function") {
+        for (const eventName of [
+            "VOICE_STATE_UPDATES",
+            "VOICE_STATE_UPDATE",
+        ]) {
             try {
-                flux.subscribe(ev, onVoiceEvent);
-                disposers.push(() => { try { flux.unsubscribe(ev, onVoiceEvent); } catch (_) {} });
-                log(`Subscribed to Flux: ${ev}`);
-            } catch (err) { log(`Flux subscribe ${ev} failed: ${err}`); }
+                flux.subscribe(eventName, onVoiceEvent);
+
+                disposers.push(() => {
+                    try {
+                        flux.unsubscribe?.(eventName, onVoiceEvent);
+                    } catch {}
+                });
+
+                log(`Subscribed to ${eventName}`);
+            } catch (error) {
+                log(`Could not subscribe to ${eventName}: ${String(error)}`);
+            }
         }
     } else {
-        log("Flux dispatcher not found — voice events won't fire");
+        log("Flux subscription API wasn't found");
     }
 
-    // VoiceStateStore change listener — fires AFTER the store applies updates.
-    const vss = voiceStore();
-    if (vss?.addChangeListener) {
+    const store = voiceStore();
+
+    if (typeof store?.addChangeListener === "function") {
         try {
-            const unreg = vss.addChangeListener(onVoiceStoreChanged);
-            disposers.push(typeof unreg === "function"
-                ? unreg
-                : () => { try { vss.removeChangeListener?.(onVoiceStoreChanged); } catch (_) {} }
+            const result = store.addChangeListener(onVoiceStoreChanged);
+
+            disposers.push(
+                typeof result === "function"
+                    ? result
+                    : () => {
+                        try {
+                            store.removeChangeListener?.(
+                                onVoiceStoreChanged
+                            );
+                        } catch {}
+                    }
             );
-            log("VoiceStateStore listener attached");
-        } catch (err) { log(`VoiceStateStore listener failed: ${err}`); }
+
+            log("Voice-state change listener attached");
+        } catch (error) {
+            log(`Could not attach voice-state listener: ${String(error)}`);
+        }
+    } else {
+        log("Voice-state change listener API wasn't found");
     }
 
-    // Resume following if storage says we were active before the reload.
     if (storage.enabled && storage.targetUserId) {
-        lastSeenTargetChannel = getUserVoiceChannel(storage.targetUserId);
-        log(`Resuming follow of ${storage.targetUserId}`);
-        if (lastSeenTargetChannel) tryMoveTo(lastSeenTargetChannel, "resume");
-    }
-}
+        lastSeenTargetChannel = getUserVoiceChannel(
+            String(storage.targetUserId)
+        );
 
-// ── Profile overflow button ───────────────────────────────────────────────────
-// Injects a "Follow / Following" entry into the "..." overflow action sheet
-// that Discord shows when you press "..." on a user's profile page.
-
-/**
- * Walk the React element tree and inject `entry` adjacent to existing
- * action-sheet rows (elements with an onPress prop). Falls back to
- * appending at the root level if no row array is found.
- */
-function injectEntry(root: any, entry: any): void {
-    function walk(node: any, depth: number): boolean {
-        if (!node?.props || depth > 5) return false;
-        const ch = node.props.children;
-
-        if (Array.isArray(ch) && ch.length > 0) {
-            // An array whose members have onPress is an action-sheet row group.
-            const isRowGroup = ch.some(
-                (c: any) => c?.props && typeof c.props.onPress === "function"
-            );
-            if (isRowGroup) {
-                node.props.children = [...ch, entry];
-                return true;
-            }
-            for (const child of ch) {
-                if (walk(child, depth + 1)) return true;
-            }
-        } else if (ch && !Array.isArray(ch)) {
-            return walk(ch, depth + 1);
-        }
-        return false;
-    }
-
-    if (!walk(root, 0)) {
-        if (root?.props) {
-            const ch = root.props.children;
-            root.props.children = Array.isArray(ch) ? [...ch, entry]
-                : ch != null ? [ch, entry] : [entry];
+        if (lastSeenTargetChannel) {
+            pendingFollowDest = lastSeenTargetChannel;
+            queueRetry();
+        } else {
+            log("Saved target isn't currently in voice");
         }
     }
 }
 
 /**
- * Build the React element for the follow/unfollow menu entry.
- * The label reflects the current following state — re-evaluated each time
- * the menu is opened, so it's always accurate.
+ * Best-effort profile overflow injection.
+ *
+ * IMPORTANT: This still relies on private component names and prop shapes.
+ * It is not a guaranteed Revenge profile-action API.
  */
 function buildFollowEntry(userId: string): any {
-    const isFollowingThis =
-        Boolean(storage.enabled) &&
-        String(storage.targetUserId) === String(userId);
+    const followingThis =
+        Boolean(storage.enabled)
+        && String(storage.targetUserId) === String(userId);
 
     const username = getUsername(userId);
-    const label    = isFollowingThis
-        ? `✅  Following ${username} — tap to stop`
-        : `🔔  Follow this user`;
+    const label = followingThis
+        ? `Following ${username} — tap to stop`
+        : "Follow this user";
 
     const onPress = (): void => {
-        if (isFollowingThis) {
+        if (followingThis) {
             stopFollowing();
         } else {
-            // Also handles switching from one target to another.
             followUser(userId);
         }
     };
 
-    // Try Discord's native ActionSheetRow for pixel-perfect styling.
-    const rowMod = probe("ActionSheetRow", [
+    const rowModule = probe("ActionSheetRow", [
         ["ActionSheetRow", "ActionSheetSection"],
         ["ActionSheetRow"],
     ]);
-    const ActionSheetRow: any =
-        rowMod?.ActionSheetRow ??
-        (typeof rowMod?.default === "function" ? rowMod.default : null);
 
-    const R  = React       as any;
-    const RN = ReactNative as any;
+    const ActionSheetRow =
+        rowModule?.ActionSheetRow
+        ?? rowModule?.default;
 
     if (typeof ActionSheetRow === "function") {
-        return R.createElement(ActionSheetRow, { key: "vcf-entry", label, onPress });
+        return React.createElement(ActionSheetRow, {
+            key: "vc-follow-entry",
+            label,
+            onPress,
+        });
     }
 
-    // Fallback: manually styled row that matches Discord's dark theme.
-    return R.createElement(
+    const RN = ReactNative as any;
+
+    if (!RN?.TouchableOpacity || !RN?.Text) return null;
+
+    return React.createElement(
         RN.TouchableOpacity,
         {
-            key:   "vcf-entry",
+            key: "vc-follow-entry",
             onPress,
             style: {
-                flexDirection:     "row",
-                alignItems:        "center",
+                flexDirection: "row",
+                alignItems: "center",
                 paddingHorizontal: 16,
-                paddingVertical:   14,
-                borderTopWidth:    0.5,
-                borderTopColor:    "rgba(255,255,255,0.08)",
+                paddingVertical: 14,
+                borderTopWidth: 0.5,
+                borderTopColor: "rgba(255,255,255,0.08)",
             },
         },
-        R.createElement(
+        React.createElement(
             RN.Text,
-            { style: { flex: 1, color: "#FFFFFF", fontSize: 16, fontWeight: "400" } },
-            label,
-        ),
+            {
+                style: {
+                    flex: 1,
+                    color: "#FFFFFF",
+                    fontSize: 16,
+                },
+            },
+            label
+        )
     );
 }
 
+function injectEntry(root: any, entry: any): boolean {
+    if (!root?.props || !entry) return false;
+
+    // Do not mutate the original React element's props. Clone the element
+    // when adding the entry to avoid corrupting shared render output.
+    const children = root.props.children;
+
+    if (Array.isArray(children)) {
+        const hasActionRows = children.some(
+            (child: any) =>
+                child?.props
+                && typeof child.props.onPress === "function"
+        );
+
+        if (hasActionRows) {
+            root.props.children = [...children, entry];
+            return true;
+        }
+
+        for (const child of children) {
+            if (injectEntry(child, entry)) return true;
+        }
+    } else if (children?.props) {
+        if (injectEntry(children, entry)) return true;
+    }
+
+    return false;
+}
+
 function injectProfileButton(): void {
-    // All known component names for Discord Android's user-profile "..." overflow
-    // menu across builds that Revenge targets. We patch every name that resolves
-    // on this particular build.
-    const targets = [
-        "UserProfileContextMenu",               // "..." on the profile page (primary)
-        "UserProfileOverflowMenu",              // alternative display name
-        "ProfileOverflowMenu",                  // older builds
-        "GuildMemberUserContextMenu",           // guild member context
-        "UserContextMenu",                      // generic user context
-        "NativeUserContextMenu",               // native wrapper variant
-        "UserProfileBottomSheetContextMenu",   // bottom-sheet profile variant
+    const candidates = [
+        "UserProfileContextMenu",
+        "UserProfileOverflowMenu",
+        "ProfileOverflowMenu",
+        "GuildMemberUserContextMenu",
+        "UserContextMenu",
+        "NativeUserContextMenu",
+        "UserProfileBottomSheetContextMenu",
     ];
 
     let patched = 0;
-    for (const name of targets) {
-        const mod = probeByName(name);
-        if (!mod) { log(`${name}: not on this build`); continue; }
 
-        // Locate the function to patch (.default, or first named export).
-        const key: string =
+    for (const name of candidates) {
+        const mod = probeByName(name);
+        if (!mod) continue;
+
+        const key =
             typeof mod.default === "function"
                 ? "default"
-                : (Object.keys(mod).find(k => typeof mod[k] === "function") ?? "");
-        if (!key) { log(`${name}: no patchable export`); continue; }
+                : Object.keys(mod).find(
+                    candidate => typeof mod[candidate] === "function"
+                );
+
+        if (!key) continue;
 
         try {
-            const unpatch = after(key, mod, (args: any[], res: any) => {
-                if (!res) return;
+            const unpatch = after(key, mod, (args: any[], result: any) => {
+                if (!running || !result) return;
 
-                // Extract userId from component props — prop name varies by component.
-                const props   = args[0] ?? {};
-                const userId  = (
-                    props.userId      ??
-                    props.user?.id    ??
-                    props.member?.userId ??
-                    props.guildMember?.userId
-                ) as string | undefined;
+                const props = args[0] ?? {};
+                const userId = String(
+                    props.userId
+                    ?? props.user?.id
+                    ?? props.member?.userId
+                    ?? props.guildMember?.userId
+                    ?? ""
+                );
 
-                if (!userId) return;
-                if (userId === ownId()) return; // skip our own profile
+                if (!userId || userId === ownId()) return;
 
                 const entry = buildFollowEntry(userId);
-                injectEntry(res, entry);
+                if (!entry) return;
+
+                injectEntry(result, entry);
             });
-            if (typeof unpatch === "function") disposers.push(unpatch);
-            log(`Patched ${name}`);
+
+            if (typeof unpatch === "function") {
+                disposers.push(unpatch);
+            }
+
             patched++;
-        } catch (err) {
-            log(`Failed to patch ${name}: ${err}`);
+            log(`Patched possible profile menu: ${name}`);
+        } catch (error) {
+            log(`Could not patch ${name}: ${String(error)}`);
         }
     }
 
     if (patched === 0) {
-        log("No profile context menu components found on this build");
+        log(
+            "No known profile menu component resolved; profile button may not appear"
+        );
     }
 }
 
-// ── Plugin lifecycle ──────────────────────────────────────────────────────────
-
 export default {
     onLoad(): void {
-        // Initialise storage with safe defaults.
-        if (storage.enabled      === undefined) storage.enabled      = false;
-        if (storage.targetUserId === undefined) storage.targetUserId = null;
-        if (storage.status       === undefined) storage.status       = "Not following";
+        if (storage.enabled === undefined) {
+            storage.enabled = false;
+        }
 
-        running           = true;
-        pendingFollowDest = null;
+        if (storage.targetUserId === undefined) {
+            storage.targetUserId = null;
+        }
+
+        if (storage.status === undefined) {
+            storage.status = "Not following";
+        }
+
+        running = true;
+        clearPending();
+        lastAttemptChannel = null;
+        lastAttemptAt = 0;
         moduleCache.clear();
 
         startListening();
         injectProfileButton();
 
-        log("Loaded — profile button injected, listeners active");
+        log("Loaded");
     },
 
     onUnload(): void {
-        running           = false;
-        pendingFollowDest = null;
+        running = false;
+        clearPending();
 
-        // Run unpatchers in reverse registration order.
-        for (const d of disposers.splice(0).reverse()) {
-            try { d(); } catch (err) { log(`Cleanup error: ${err}`); }
+        for (const dispose of disposers.splice(0).reverse()) {
+            try {
+                dispose();
+            } catch (error) {
+                log(`Cleanup failed: ${String(error)}`);
+            }
         }
+
         moduleCache.clear();
         log("Unloaded");
     },
