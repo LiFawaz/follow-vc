@@ -42,7 +42,7 @@ test("retains user-facing VC Follow features", () => {
 });
 
 test("validates Discord user IDs and registers cleanup", () => {
-  assert.match(source, /\d\{15,22\}/);
+  assert.match(source, /\\d\{15,22\}/);
   assert.match(source, /unpatches\.splice\(0\)\.reverse\(\)/);
   assert.match(source, /return stopPlugin/);
 });
