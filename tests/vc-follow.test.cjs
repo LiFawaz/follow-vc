@@ -26,19 +26,16 @@ test("exports a Revenge plugin with persistent settings", () => {
   assert.ok(manifest.dependencies["revenge.api"]);
 });
 
-test("retains user-facing VC Follow features", () => {
-  for (const feature of [
-    'name: "vcf"',
-    'name: "vcunf"',
-    "function followUser(",
-    "function stopFollowing(",
-    "function onVoiceUpdate(",
-    "function patchMenu(",
-    'id: "vc-follow-profile"',
-    "selectVoiceChannel",
-  ]) {
-    assert.ok(source.includes(feature), `Missing feature marker: ${feature}`);
-  }
+test("provides follow and unfollow commands without a profile-menu patch", () => {
+  assert.match(source, /\["vcf",\s*"Follow a user voice channel by Discord user ID"/);
+  assert.match(source, /\["vcunf",\s*"Stop following the current user"/);
+  assert.match(source, /function registerCommands\(/);
+  assert.match(source, /function followUser\(/);
+  assert.match(source, /function stopFollowing\(/);
+  assert.match(source, /function onVoiceUpdate\(/);
+  assert.doesNotMatch(source, /function patchMenu\(/);
+  assert.doesNotMatch(source, /vc-follow-profile/);
+  assert.match(source, /selectVoiceChannel/);
 });
 
 test("validates Discord user IDs and registers cleanup", () => {
