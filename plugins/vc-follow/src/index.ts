@@ -1,13 +1,7 @@
 
-import { findByProps, findByName } from "@revenge-mod/modules/finders";
-import { after } from "@revenge-mod/patcher";
+import { findByProps } from "@revenge-mod/modules/finders";
 import React from "react";
 import * as ReactNative from "react-native";
-
-const MENU_NAMES = [
-    "UserProfileOverflowMenu",
-    "BotUserProfileOverflowMenu",
-];
 
 const CONNECT = 1n << 20n;
 const unpatches: Array<() => void> = [];
@@ -21,17 +15,20 @@ let lastAttemptAt = 0;
 
 function log(message: string) {
     try {
-        apiRef?.logger?.log(`[VC Follow] ${message}`);
+        (apiRef?.logger ?? apiRef?.plugin?.logger)?.log?.(`[VC Follow] ${message}`);
     } catch {}
 }
 
 function store() {
-    return apiRef?.jsonStorage?.cache ?? {};
+    return apiRef?.jsonStorage?.cache ?? apiRef?.storage?.cache ?? apiRef?.plugin?.storage?.cache ?? {};
 }
 
 function persist() {
     try {
-        apiRef?.jsonStorage?.set?.({ ...store() });
+        const value = { ...store() };
+        if (typeof apiRef?.jsonStorage?.set === "function") apiRef.jsonStorage.set(value);
+        else if (typeof apiRef?.storage?.set === "function") apiRef.storage.set(value);
+        else if (typeof apiRef?.plugin?.storage?.set === "function") apiRef.plugin.storage.set(value);
     } catch (error) {
         log(`Could not persist settings: ${String(error)}`);
     }
@@ -49,20 +46,6 @@ function probe(label: string, candidates: string[][]): any {
             }
         } catch {}
     }
-
-    return null;
-}
-
-function probeName(name: string): any {
-    if (cache.has(name)) return cache.get(name);
-
-    try {
-        const found = findByName(name, false);
-        if (found) {
-            cache.set(name, found);
-            return found;
-        }
-    } catch {}
 
     return null;
 }
@@ -263,95 +246,39 @@ function onVoiceUpdate(payload: any) {
     }
 }
 
-function findItems(result: any): any[] | null {
-    const direct = result?.props?.items ?? result?.props?.children?.props?.items;
-    if (Array.isArray(direct) && Array.isArray(direct[0])) return direct[0];
-
-    const stack = [result];
-    const seen = new Set<any>();
-
-    while (stack.length) {
-        const node = stack.pop();
-        if (!node || typeof node !== "object" || seen.has(node)) continue;
-        seen.add(node);
-
-        const items = node?.props?.items;
-        if (Array.isArray(items) && Array.isArray(items[0])) return items[0];
-
-        const children = node.props?.children;
-        if (Array.isArray(children)) stack.push(...children);
-        else if (children) stack.push(children);
-    }
-
-    return null;
-}
-
-function patchMenu(args: any[], result: any) {
-    const s = store();
-    if (!running || !result) return;
-
-    const id = args?.[0]?.user?.id;
-    if (!id || String(id) === ownId()) return;
-
-    const items = findItems(result);
-    if (!items) return;
-
-    const userId = String(id);
-    const following = !!s.enabled && String(s.targetUserId) === userId;
-
-    const toggle = () => {
-        if (s.enabled && String(s.targetUserId) === userId) stopFollowing();
-        else followUser(userId);
-    };
-
-    const entry = {
-        id: "vc-follow-profile",
-        label: following ? "Unfollow VC" : "Follow VC",
-        vcFollowAction: true,
-        action: toggle,
-        onPress: toggle,
-    };
-
-    const index = items.findIndex((item: any) => item?.vcFollowAction === true);
-    if (index >= 0) items[index] = entry;
-    else items.push(entry);
-}
-
 function registerCommands() {
-    const commands = probe("commands", [["registerCommand"]]);
-    if (typeof commands?.registerCommand !== "function") {
-        log("Slash command API unavailable");
+    // Revenge Next exposes commands under api.api.commands; older builds may expose them directly.
+    const commands = apiRef?.api?.commands ?? apiRef?.commands ?? probe("commands", [["registerCommand"]]);
+    const register = commands?.registerCommand;
+    if (typeof register !== "function") {
+        log("Command API unavailable. Use plugin settings to follow by ID.");
         return;
     }
 
-    for (const command of [
-        {
-            name: "vcf",
-            description: "Follow a user's voice channel",
-            options: [{ name: "user", description: "Discord user ID", type: 3, required: true }],
-            execute: (args: any) => {
-                const value = Array.isArray(args)
-                    ? args.find((arg: any) => arg?.name === "user")?.value
-                    : args?.user;
-                return { content: followUser(value), send: false };
-            },
-        },
-        {
-            name: "vcunf",
-            description: "Stop following a voice channel",
-            options: [],
-            execute: () => ({ content: stopFollowing(), send: false }),
-        },
-    ]) {
+    const follow = (...args: any[]) => {
+        const raw = args.length > 1 ? args[1] : args[0];
+        const value = Array.isArray(raw)
+            ? raw.find((arg: any) => arg?.name === "user" || arg?.name === "id")?.value ?? raw[0]?.value
+            : raw?.user ?? raw?.id ?? raw?.options?.user ?? raw?.options?.id ?? raw;
+        return { content: followUser(value), send: false };
+    };
+    const unfollow = () => ({ content: stopFollowing(), send: false });
+
+    for (const [name, description, execute] of [
+        ["vcf", "Follow a user voice channel by Discord user ID", follow],
+        ["vcunf", "Stop following the current user", unfollow],
+    ] as [string, string, (...args: any[]) => any][]) {
         try {
-            const unregister = commands.registerCommand(command);
+            let unregister: any;
+            if (register.length >= 2) unregister = register.call(commands, name, description, execute);
+            else unregister = register.call(commands, { name, description, options: name === "vcf" ? [{ name: "user", description: "Discord user ID", type: 3, required: true }] : [], execute });
             if (typeof unregister === "function") unpatches.push(unregister);
+            log("Registered command /" + name);
         } catch (error) {
-            log(`Command registration failed: ${String(error)}`);
+            log("Command registration failed for /" + name + ": " + String(error));
         }
     }
 }
-
 function startPlugin(api: any) {
     apiRef = api;
     running = true;
@@ -382,18 +309,6 @@ function startPlugin(api: any) {
         log("Voice event dispatcher unavailable");
     }
 
-    for (const name of MENU_NAMES) {
-        const module = probeName(name);
-        if (typeof module?.default !== "function") continue;
-
-        try {
-            const unpatch = after("default", module, patchMenu);
-            if (typeof unpatch === "function") unpatches.push(unpatch);
-        } catch (error) {
-            log(`Could not patch ${name}: ${String(error)}`);
-        }
-    }
-
     if (s.enabled && s.targetUserId) {
         const channel = getVoiceChannel(String(s.targetUserId));
         if (channel) moveTo(channel, "resume");
@@ -416,7 +331,7 @@ function stopPlugin() {
 }
 
 function SettingsComponent({ api }: { api: any }) {
-    const settings = api.jsonStorage.use() ?? {};
+    const settings = api?.jsonStorage?.use?.() ?? api?.storage?.use?.() ?? {};
     const [id, setId] = React.useState(String(settings.targetUserId ?? ""));
     const [result, setResult] = React.useState("");
     const RN = ReactNative as any;
@@ -432,7 +347,7 @@ function SettingsComponent({ api }: { api: any }) {
 
     return e(RN.ScrollView, { contentContainerStyle: { padding: 16 } },
         text("VC Follow", { fontSize: 22, fontWeight: "bold" }),
-        text("Follow a friend between voice channels, including across servers. You can also use /vcf and /vcunf or the Follow VC action on a user profile.", { color: "#cccccc", fontSize: 14 }),
+        text("Enter a Discord user ID and tap Follow. The /vcf and /vcunf commands register when supported by this Revenge build. Cross-server following depends on voice-state visibility and channel permissions.", { color: "#cccccc", fontSize: 14 }),
         text(`Status: ${settings.status ?? "Not following anyone"}`, { color: settings.enabled ? "#57f287" : "#aaaaaa" }),
         text("Follow by User ID", { fontWeight: "bold", fontSize: 16 }),
         e(RN.TextInput, {
