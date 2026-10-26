@@ -59,6 +59,11 @@ jobs:
           cp "plugins/vc-follow/manifest.json" package/manifest.json
           cp "plugins/vc-follow/build/js/index.js" package/index.js
           (cd package && zip -q "../dist/pool/${ID}@${VERSION}.zip" manifest.json index.js)
+
+          # Keep the previous direct-manifest URL working for existing installs.
+          mkdir -p dist/vc-follow
+          cp "plugins/vc-follow/manifest.json" dist/vc-follow/manifest.json
+          cp "plugins/vc-follow/build/js/index.js" dist/vc-follow/index.js
           pnpm exec revenge-plugin generate-index \
             --dist dist/pool \
             --base-url "https://kkssmm918839-crypto.github.io/follow-vc/pool" \
