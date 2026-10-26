@@ -138,9 +138,17 @@ function onVoiceEvent(payload: any): void {
 function onVoiceStoreChanged(): void {
     if (!running || !storage.enabled || !storage.targetUserId) return;
     const current = getUserVoiceChannel(storage.targetUserId);
-    if (current === lastSeenTargetChannel) return;
-    lastSeenTargetChannel = current;
-    if (current) tryMoveTo(current, "store change");
+    if (current !== lastSeenTargetChannel) {
+        lastSeenTargetChannel = current;
+        if (current) tryMoveTo(current, "store change");
+        return;
+    }
+    // The target may not have moved at all: the user can disconnect or manually
+    // enter another VC. Keep follow mode active and bring them back to the target.
+    if (current) {
+        const mine = getOwnVoiceChannel();
+        if (mine !== current) tryMoveTo(current, "re-follow after own VC change");
+    }
 }
 export function followUser(idOrMention: unknown): string {
     const id = normalizeUserId(idOrMention);
