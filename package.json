@@ -13,8 +13,9 @@
   },
   "devDependencies": {
     "@types/react": "^19.2.18",
-    "react-native": "0.81.6",
-    "typescript": "^7.0.2"
+    "react-native": "0.86.0",
+    "typescript": "^7.0.2",
+    "react": "19.2.3"
   },
   "overrides": {
     "@react-native/community-cli-plugin": "npm:dry-uninstall",
