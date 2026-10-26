@@ -1,377 +1,237 @@
+/**
+ * VC Follow — Revenge plugin (Vendetta-compatible)
+ * Follows a friend between voice channels, including across servers.
+ * Adds "Follow this user" to the user context menu.
+ *
+ * Author: Li Fawaz
+ */
+import { logger }                            from "@vendetta";
+import { findByProps, findByName }           from "@vendetta/metro";
+import { React, ReactNative }                from "@vendetta/metro/common";
+import { after }                             from "@vendetta/patcher";
+import { registerCommand }                   from "@vendetta/commands";
+import { storage }                           from "@vendetta/plugin";
+import Settings                              from "./Settings";
 
-import { findByProps } from "@revenge-mod/modules/finders";
-import React from "react";
-import * as ReactNative from "react-native";
+type VoiceState = {
+    userId?: string; user_id?: string;
+    channelId?: string | null; channel_id?: string | null;
+    oldChannelId?: string | null; old_channel_id?: string | null;
+    guildId?: string; guild_id?: string;
+};
 
-const CONNECT = 1n << 20n;
-const unpatches: Array<() => void> = [];
-const cache = new Map<string, any>();
-
+const CONNECT = 1048576n;
+const MOVE_MEMBERS = 16777216n;
+const UNSET = "";
+const disposers: Array<() => void> = [];
+const moduleCache: Map<string, any> = new Map();
 let running = false;
-let apiRef: any;
-let lastTargetChannel: string | null = null;
+let lastSeenTargetChannel: string | null = null;
 let lastAttemptChannel: string | null = null;
 let lastAttemptAt = 0;
+let pendingFollowDest: string | null = null;
 
-function log(message: string) {
-    try {
-        (apiRef?.logger ?? apiRef?.plugin?.logger)?.log?.(`[VC Follow] ${message}`);
-    } catch {}
-}
+function log(msg: string): void { try { logger.log(`[VC Follow] ${msg}`); } catch (_) {} }
+function setStatus(msg: string): void { storage.status = msg; log(msg); }
 
-function store() {
-    return apiRef?.jsonStorage?.cache ?? apiRef?.storage?.cache ?? apiRef?.plugin?.storage?.cache ?? {};
-}
-
-function persist() {
-    try {
-        const value = { ...store() };
-        if (typeof apiRef?.jsonStorage?.set === "function") apiRef.jsonStorage.set(value);
-        else if (typeof apiRef?.storage?.set === "function") apiRef.storage.set(value);
-        else if (typeof apiRef?.plugin?.storage?.set === "function") apiRef.plugin.storage.set(value);
-    } catch (error) {
-        log(`Could not persist settings: ${String(error)}`);
+function probe(label: string, options: string[][]): any {
+    if (moduleCache.has(label)) return moduleCache.get(label);
+    for (const keys of options) {
+        try { const m = findByProps(...keys); if (m) { moduleCache.set(label, m); return m; } } catch (_) {}
     }
-}
-
-function probe(label: string, candidates: string[][]): any {
-    if (cache.has(label)) return cache.get(label);
-
-    for (const keys of candidates) {
-        try {
-            const found = findByProps(...keys);
-            if (found) {
-                cache.set(label, found);
-                return found;
-            }
-        } catch {}
-    }
-
+    log(`${label}: not found on this build`);
     return null;
 }
-
-const users = () => probe("users", [
-    ["getCurrentUser", "getUser"],
-    ["getCurrentUser"],
-]);
-
-const voice = () => probe("voice", [
-    ["getVoiceStateForUser", "getVoiceStatesForChannel"],
-    ["getVoiceStateForUser"],
-    ["getAllVoiceStates"],
-]);
-
-const channels = () => probe("channels", [["getChannel"]]);
-const selected = () => probe("selected", [
-    ["getVoiceChannelId"],
-    ["getCurrentVoiceChannelId"],
-]);
-const permissions = () => probe("permissions", [["can"]]);
-const voiceActions = () => probe("voiceActions", [
-    ["selectVoiceChannel", "disconnect"],
-    ["selectVoiceChannel"],
-]);
-
-function ownId(): string | null {
-    try {
-        return users()?.getCurrentUser?.()?.id ?? null;
-    } catch {
-        return null;
-    }
+function probeByName(name: string): any {
+    if (moduleCache.has(name)) return moduleCache.get(name);
+    try { const m = findByName(name, false); if (m) { moduleCache.set(name, m); return m; } } catch (_) {}
+    return null;
 }
-
-function username(id: string): string {
-    try {
-        const user = users()?.getUser?.(id);
-        return user?.globalName ?? user?.displayName ?? user?.username ?? id;
-    } catch {
-        return id;
-    }
+function voiceStore(): any {
+    return probe("VoiceStateStore", [["getVoiceStateForUser", "getVoiceStatesForChannel"], ["getVoiceStateForUser"], ["getAllVoiceStates"]]);
 }
-
-function normalizeId(value: unknown): string | null {
-    return /^(?:<@!?)?(\d{15,22})>?$/
-        .exec(String(value ?? "").trim())?.[1] ?? null;
+function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
+function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
+function permStore(): any { return probe("PermissionStore", [["can"]]); }
+function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
+function getOwnVoiceChannel(): string | null {
+    const s = probe("SelectedChannelStore", [["getVoiceChannelId"], ["getCurrentVoiceChannelId"], ["getSelectedVoiceChannelId"]]);
+    try { return s?.getVoiceChannelId?.() ?? s?.getCurrentVoiceChannelId?.() ?? s?.getSelectedVoiceChannelId?.() ?? null; } catch (_) { return null; }
 }
-
-function getVoiceChannel(id: string): string | null {
+function getUserVoiceChannel(userId: string): string | null {
+    const s = voiceStore();
+    if (!s) return null;
     try {
-        const state = voice()?.getVoiceStateForUser?.(id);
-        if (state) return state.channelId ?? state.channel_id ?? null;
-
-        const all = voice()?.getAllVoiceStates?.();
+        const direct = s.getVoiceStateForUser?.(userId);
+        if (direct) return direct.channelId ?? direct.channel_id ?? null;
+        const all = s.getAllVoiceStates?.();
         if (all && typeof all === "object") {
             for (const group of Object.values(all) as any[]) {
-                const item = group?.[id];
-                if (item) return item.channelId ?? item.channel_id ?? null;
+                const state = group?.[userId];
+                if (state) return state.channelId ?? state.channel_id ?? null;
             }
         }
-    } catch (error) {
-        log(`Voice lookup failed: ${String(error)}`);
-    }
-
+    } catch (_) {}
     return null;
 }
-
-function ownVoiceChannel(): string | null {
-    try {
-        return selected()?.getVoiceChannelId?.()
-            ?? selected()?.getCurrentVoiceChannelId?.()
-            ?? null;
-    } catch {
-        return null;
-    }
+function ownId(): string | null { try { return userStore()?.getCurrentUser?.()?.id ?? null; } catch (_) { return null; } }
+function normalizeUserId(raw: unknown): string | null {
+    const s = String(raw ?? "").trim();
+    const m = /^(?:<@!?)?(\d{15,22})>?$/.exec(s);
+    return m?.[1] ?? null;
 }
-
-function setStatus(message: string) {
-    const s = store();
-    s.status = message;
-    persist();
-    log(message);
+function can(channel: any, permission: bigint): boolean {
+    const s = permStore();
+    if (!s || typeof s.can !== "function") return false;
+    try { return !!s.can(permission, channel); } catch (_) { try { return !!s.can(permission.toString(), channel); } catch (_) { return false; } }
 }
-
-function moveTo(channelId: string, source: string) {
-    const s = store();
-
-    if (!running || !s.enabled || !s.targetUserId || !channelId) return;
-
-    if (ownVoiceChannel() === channelId) {
-        setStatus(`Already in ${username(String(s.targetUserId))}'s voice channel`);
-        return;
-    }
-
-    if (lastAttemptChannel === channelId && Date.now() - lastAttemptAt < 2500) return;
-
-    let channel: any = null;
+function channelHasSpace(channel: any, channelId: string): boolean {
+    const limit = Number(channel.userLimit ?? channel.user_limit ?? 0);
+    if (!Number.isFinite(limit) || limit <= 0) return true;
     try {
-        channel = channels()?.getChannel?.(channelId) ?? null;
-    } catch {}
-
-    try {
-        const can = permissions()?.can;
-        if (channel && typeof can === "function") {
-            let allowed = false;
-            try {
-                allowed = !!can(CONNECT, channel);
-            } catch {
-                allowed = !!can(Number(CONNECT), channel);
-            }
-
-            if (!allowed) {
-                setStatus("Can't join: missing permission to connect");
-                return;
-            }
+        const states = voiceStore()?.getVoiceStatesForChannel?.(channelId);
+        if (!states || typeof states !== "object") return true;
+        return Object.keys(states).length < limit || can(channel, MOVE_MEMBERS);
+    } catch (_) { return true; }
+}
+function tryMoveTo(destinationId: string, source: string): void {
+    if (!running || !storage.enabled || !storage.targetUserId || !destinationId) return;
+    const myChannelId = getOwnVoiceChannel();
+    if (myChannelId && destinationId === myChannelId) { pendingFollowDest = null; setStatus("Already in the same VC"); return; }
+    if (lastAttemptChannel === destinationId && Date.now() - lastAttemptAt < 2500) return;
+    const dest = channelStore()?.getChannel?.(destinationId);
+    if (dest) {
+        if (!can(dest, CONNECT)) { pendingFollowDest = null; setStatus("Can't follow: no permission to join that voice channel"); return; }
+        if (!channelHasSpace(dest, destinationId)) {
+            pendingFollowDest = destinationId;
+            setStatus(`Voice channel is full — waiting for a slot or for ${storage.targetUserId} to move`);
+            return;
         }
-    } catch {}
-
+    }
     const actions = voiceActions();
-    if (typeof actions?.selectVoiceChannel !== "function") {
-        setStatus("Voice switching API not found on this Discord build");
-        return;
-    }
-
-    lastAttemptChannel = channelId;
-    lastAttemptAt = Date.now();
-
-    try {
-        actions.selectVoiceChannel(channelId);
-        setStatus(`Trying to join ${channel?.name ?? "target voice channel"} (${source})`);
-    } catch (error) {
-        setStatus(`Join failed: ${String(error)}`);
+    if (typeof actions?.selectVoiceChannel !== "function") { setStatus("Voice switching unavailable on this Discord build"); return; }
+    pendingFollowDest = null; lastAttemptChannel = destinationId; lastAttemptAt = Date.now();
+    try { actions.selectVoiceChannel(destinationId); setStatus(`Following ${storage.targetUserId}: joined VC (${source}) [${dest?.guild_id ?? "cross-server"}]`); }
+    catch (err) { setStatus(`VC join failed: ${String(err)}`); }
+}
+function maybeFollowState(state: VoiceState): void {
+    if (!running || !storage.enabled || !storage.targetUserId) return;
+    const userId = String(state.userId ?? state.user_id ?? "");
+    if (userId !== String(storage.targetUserId)) return;
+    const destination = state.channelId ?? state.channel_id ?? null;
+    const previous = state.oldChannelId ?? state.old_channel_id ?? lastSeenTargetChannel;
+    if (destination === previous || destination === lastSeenTargetChannel) return;
+    lastSeenTargetChannel = destination;
+    if (!destination) { setStatus("Friend left voice — will follow when they rejoin a VC"); return; }
+    tryMoveTo(destination, "voice event");
+}
+function onVoiceEvent(payload: any): void {
+    if (!running || !payload) return;
+    const updates: any[] = payload.voiceStates ?? payload.voice_states ?? (payload.voiceState ? [payload.voiceState] : [payload]);
+    if (!Array.isArray(updates)) return;
+    for (const state of updates) if (state) maybeFollowState(state);
+    if (pendingFollowDest && running && storage.enabled) {
+        const dest = channelStore()?.getChannel?.(pendingFollowDest);
+        if (dest && channelHasSpace(dest, pendingFollowDest)) tryMoveTo(pendingFollowDest, "capacity freed");
     }
 }
-
-export function followUser(rawId: unknown): string {
-    const id = normalizeId(rawId);
-    const s = store();
-
-    if (!id) return "Invalid Discord user ID";
-    if (id === ownId()) return "You can't follow yourself";
-
-    s.targetUserId = id;
-    s.enabled = true;
-    persist();
-    lastAttemptChannel = null;
-    lastAttemptAt = 0;
-    lastTargetChannel = getVoiceChannel(id);
-
-    if (lastTargetChannel) moveTo(lastTargetChannel, "follow start");
-    else setStatus(`Waiting for ${username(id)} to join voice`);
-
-    return lastTargetChannel
-        ? `Following ${username(id)}`
-        : `Following ${username(id)}; waiting for voice`;
+function onVoiceStoreChanged(): void {
+    if (!running || !storage.enabled || !storage.targetUserId) return;
+    const current = getUserVoiceChannel(storage.targetUserId);
+    if (current === lastSeenTargetChannel) return;
+    lastSeenTargetChannel = current;
+    if (current) tryMoveTo(current, "store change");
 }
-
+export function followUser(idOrMention: unknown): string {
+    const id = normalizeUserId(idOrMention);
+    if (!id) return "Provide a valid Discord user ID (17–22 digits).";
+    if (id === ownId()) return "You can't follow yourself.";
+    storage.targetUserId = id; storage.enabled = true; pendingFollowDest = null;
+    lastSeenTargetChannel = getUserVoiceChannel(id); lastAttemptChannel = null;
+    setStatus(`Following ${id} — waiting for a VC move`);
+    if (lastSeenTargetChannel) tryMoveTo(lastSeenTargetChannel, "start");
+    return `VC Follow ON for ${id}`;
+}
 export function stopFollowing(): string {
-    const s = store();
-    const oldId = s.targetUserId;
-
-    s.enabled = false;
-    s.targetUserId = null;
-    persist();
-    lastTargetChannel = null;
-    lastAttemptChannel = null;
-    lastAttemptAt = 0;
-
-    const message = oldId
-        ? `Stopped following ${username(String(oldId))}`
-        : "Not following anyone";
-
-    setStatus(message);
-    return message;
+    storage.enabled = false; storage.targetUserId = UNSET; pendingFollowDest = null;
+    lastSeenTargetChannel = null; lastAttemptChannel = null; setStatus("Not following");
+    return "VC Follow OFF";
 }
-
-function onVoiceUpdate(payload: any) {
-    const s = store();
-    if (!running || !s.enabled || !s.targetUserId || !payload) return;
-
-    const updates = Array.isArray(payload.voiceStates) ? payload.voiceStates
-        : Array.isArray(payload.voice_states) ? payload.voice_states
-        : payload.voiceState ? [payload.voiceState]
-        : payload.voice_state ? [payload.voice_state]
-        : [payload];
-
-    for (const state of updates) {
-        if (!state) continue;
-
-        const id = String(state.userId ?? state.user_id ?? "");
-        if (id !== String(s.targetUserId)) continue;
-
-        const next = state.channelId ?? state.channel_id ?? null;
-        lastTargetChannel = next;
-
-        if (next) moveTo(String(next), "voice event");
-        else setStatus("Target left voice; waiting for them to rejoin");
-    }
-}
-
-function registerCommands() {
-    // Revenge Next exposes commands under api.api.commands; older builds may expose them directly.
-    const commands = apiRef?.api?.commands ?? apiRef?.commands ?? probe("commands", [["registerCommand"]]);
-    const register = commands?.registerCommand;
-    if (typeof register !== "function") {
-        log("Command API unavailable. Use plugin settings to follow by ID.");
-        return;
-    }
-
-    const follow = (...args: any[]) => {
-        const raw = args.length > 1 ? args[1] : args[0];
-        const value = Array.isArray(raw)
-            ? raw.find((arg: any) => arg?.name === "user" || arg?.name === "id")?.value ?? raw[0]?.value
-            : raw?.user ?? raw?.id ?? raw?.options?.user ?? raw?.options?.id ?? raw;
-        return { content: followUser(value), send: false };
-    };
-    const unfollow = () => ({ content: stopFollowing(), send: false });
-
-    for (const [name, description, execute] of [
-        ["vcf", "Follow a user voice channel by Discord user ID", follow],
-        ["vcunf", "Stop following the current user", unfollow],
-    ] as [string, string, (...args: any[]) => any][]) {
-        try {
-            let unregister: any;
-            if (register.length >= 2) unregister = register.call(commands, name, description, execute);
-            else unregister = register.call(commands, { name, description, options: name === "vcf" ? [{ name: "user", description: "Discord user ID", type: 3, required: true }] : [], execute });
-            if (typeof unregister === "function") unpatches.push(unregister);
-            log("Registered command /" + name);
-        } catch (error) {
-            log("Command registration failed for /" + name + ": " + String(error));
-        }
-    }
-}
-function startPlugin(api: any) {
-    apiRef = api;
-    running = true;
-    cache.clear();
-
-    const s = store();
-    if (s.enabled === undefined) s.enabled = false;
-    if (s.targetUserId === undefined) s.targetUserId = null;
-    if (s.status === undefined) s.status = "Not following anyone";
-
-    registerCommands();
-
-    const dispatcher = probe("dispatcher", [
-        ["dispatch", "subscribe", "unsubscribe"],
-        ["subscribe", "unsubscribe"],
-    ]);
-
-    if (typeof dispatcher?.subscribe === "function") {
+function startListening(): void {
+    const flux = probe("Flux", [["dispatch", "subscribe", "unsubscribe"], ["subscribe", "unsubscribe"]]);
+    if (flux && typeof flux.subscribe === "function") {
         for (const event of ["VOICE_STATE_UPDATES", "VOICE_STATE_UPDATE"]) {
-            try {
-                dispatcher.subscribe(event, onVoiceUpdate);
-                unpatches.push(() => dispatcher.unsubscribe?.(event, onVoiceUpdate));
-            } catch (error) {
-                log(`Could not subscribe to ${event}: ${String(error)}`);
-            }
+            try { flux.subscribe(event, onVoiceEvent); disposers.push(() => flux.unsubscribe?.(event, onVoiceEvent)); log(`Subscribed to ${event}`); }
+            catch (err) { log(`Subscribe ${event} failed: ${String(err)}`); }
         }
-    } else {
-        log("Voice event dispatcher unavailable");
     }
-
-    if (s.enabled && s.targetUserId) {
-        const channel = getVoiceChannel(String(s.targetUserId));
-        if (channel) moveTo(channel, "resume");
-    }
-
-    log("Loaded");
-}
-
-function stopPlugin() {
-    running = false;
-
-    for (const unpatch of unpatches.splice(0).reverse()) {
+    const store = voiceStore();
+    if (typeof store?.addChangeListener === "function") {
         try {
-            unpatch();
-        } catch {}
+            const unreg = store.addChangeListener(onVoiceStoreChanged);
+            disposers.push(typeof unreg === "function" ? unreg : () => store.removeChangeListener?.(onVoiceStoreChanged));
+            log("Subscribed to VoiceStateStore changes");
+        } catch (_) {}
     }
-
-    cache.clear();
-    log("Unloaded");
+    if (disposers.length === 0) setStatus("Voice listeners unavailable on this build");
 }
-
-function SettingsComponent({ api }: { api: any }) {
-    const settings = api?.jsonStorage?.use?.() ?? api?.storage?.use?.() ?? {};
-    const [id, setId] = React.useState(String(settings.targetUserId ?? ""));
-    const [result, setResult] = React.useState("");
-    const RN = ReactNative as any;
-    const e = React.createElement;
-
-    const text = (value: string, style: object = {}) =>
-        e(RN.Text, { style: { color: "#eeeeee", fontSize: 15, marginBottom: 10, ...style } }, value);
-    const button = (label: string, onPress: () => void, color: string) =>
-        e(RN.TouchableOpacity, {
-            onPress,
-            style: { backgroundColor: color, padding: 12, borderRadius: 8, marginVertical: 6 },
-        }, text(label, { color: "#ffffff", fontWeight: "bold", textAlign: "center", marginBottom: 0 }));
-
-    return e(RN.ScrollView, { contentContainerStyle: { padding: 16 } },
-        text("VC Follow", { fontSize: 22, fontWeight: "bold" }),
-        text("Enter a Discord user ID and tap Follow. The /vcf and /vcunf commands register when supported by this Revenge build. Cross-server following depends on voice-state visibility and channel permissions.", { color: "#cccccc", fontSize: 14 }),
-        text(`Status: ${settings.status ?? "Not following anyone"}`, { color: settings.enabled ? "#57f287" : "#aaaaaa" }),
-        text("Follow by User ID", { fontWeight: "bold", fontSize: 16 }),
-        e(RN.TextInput, {
-            value: id,
-            onChangeText: setId,
-            keyboardType: "numeric",
-            placeholder: "123456789012345678",
-            placeholderTextColor: "#666666",
-            style: { color: "#ffffff", backgroundColor: "#262932", borderRadius: 8, padding: 12, fontSize: 15 },
-        }),
-        button("Follow", () => setResult(followUser(id)), "#5865F2"),
-        button("Unfollow", () => { setResult(stopFollowing()); setId(""); }, "#42454c"),
-        result ? text(result, { color: "#a1b4fc", marginTop: 8 }) : null
-    );
+function buildFollowEntry(userId: string): any {
+    const onPress = () => { const result = followUser(userId); log(`Profile btn: ${result}`); };
+    const rowMod = probe("ActionSheetRow", [["ActionSheetRow", "ActionSheetSection"], ["ActionSheetRow"]]);
+    const ActionSheetRow = rowMod?.ActionSheetRow ?? (typeof rowMod?.default === "function" ? rowMod.default : null);
+    const R = React as any; const RN = ReactNative as any;
+    if (typeof ActionSheetRow === "function") return R.createElement(ActionSheetRow, { key: "vcf-follow", label: "Follow this user", onPress });
+    return R.createElement(RN.TouchableOpacity, { key: "vcf-follow", onPress, style: { paddingHorizontal: 16, paddingVertical: 14 } },
+        R.createElement(RN.Text, { style: { color: "#FFFFFF", fontSize: 16, fontWeight: "600" } }, "Follow this user"));
 }
-
-export default plugin<{ jsonStorage: { enabled: boolean; targetUserId: string | null; status: string } }>({
-    jsonStorage: {
-        load: true,
-        default: { enabled: false, targetUserId: null, status: "Not following anyone" },
+function injectProfileButton(): void {
+    const names = ["GuildMemberUserContextMenu", "UserContextMenu", "NativeUserContextMenu", "UserProfileBottomSheetContextMenu"];
+    let patched = 0;
+    for (const name of names) {
+        const mod = probeByName(name); if (!mod) continue;
+        const key = typeof mod.default === "function" ? "default" : (Object.keys(mod).find(k => typeof mod[k] === "function") ?? "default");
+        try {
+            const unpatch = after(key, mod, (args: any[], res: any) => {
+                if (!res?.props) return;
+                const userId: string | undefined = args[0]?.userId ?? args[0]?.user?.id ?? args[0]?.member?.userId;
+                if (!userId || userId === ownId()) return;
+                const entry = buildFollowEntry(userId); const ch = res.props.children;
+                res.props.children = Array.isArray(ch) ? [...ch, entry] : ch != null ? [ch, entry] : [entry];
+            });
+            if (typeof unpatch === "function") disposers.push(unpatch);
+            log(`Profile button: patched ${name}`); patched++;
+        } catch (err) { log(`Profile button: patch failed for ${name}: ${String(err)}`); }
+    }
+    if (patched === 0) log("Profile button: no context menu component found on this build");
+}
+function readCommandUser(args: any): unknown {
+    const item = Array.isArray(args) ? (args.find((a: any) => a?.name === "userid") ?? args[0]) : args;
+    return item?.value?.id ?? item?.value ?? item?.user?.id ?? item?.id ?? item;
+}
+function registerCommands(): void {
+    const commands: Array<[string, string, any[], (args: any) => string]> = [
+        ["vcf", "Follow a friend to their voice channel (works cross-server)", [{ name: "userid", displayName: "userid", description: "User ID to follow (17–22 digit number)", displayDescription: "User ID to follow (17–22 digit number)", type: 3, required: true }], args => String(followUser(readCommandUser(args)))],
+        ["vcunf", "Stop following voice channels", [], () => stopFollowing()],
+    ];
+    for (const [name, description, options, handler] of commands) {
+        try {
+            const unreg = registerCommand({ name, displayName: name, description, displayDescription: description, options, applicationId: "-1", inputType: 1, type: 1, execute: (args: any) => ({ send: false, result: handler(args) }) } as any);
+            if (typeof unreg === "function") disposers.push(unreg);
+            log(`Registered /${name}`);
+        } catch (err) { log(`Register /${name} failed: ${String(err)}`); }
+    }
+}
+export default {
+    onLoad() {
+        storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
+        running = true; pendingFollowDest = null; moduleCache.clear();
+        lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
+        startListening(); injectProfileButton(); registerCommands(); log("Loaded.");
     },
-    start(api: any) {
-        startPlugin(api);
-        return stopPlugin;
+    onUnload() {
+        running = false; pendingFollowDest = null;
+        for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (err) { log(`Cleanup: ${String(err)}`); } }
+        moduleCache.clear(); log("Unloaded.");
     },
-    SettingsComponent,
-});
+    settings: Settings,
+};
