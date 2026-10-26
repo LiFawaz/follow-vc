@@ -117,3 +117,22 @@ test('rejects invalid targets and can follow when not already in voice', () => {
   assert.deepEqual(m.moves,['next']);
   m.plugin.onUnload();
 });
+
+test('re-follows target when user manually leaves or switches VC', () => {
+  const m=environment();m.plugin.onLoad();
+  m.commands.vcf.execute([{name:'userid',value:TARGET}]);
+  m.emit(TARGET,'next','origin');
+  assert.deepEqual(m.moves,['next']);
+
+  // The target stays in "next", while the user leaves for "next2".
+  m.setCurrentChannel('next2');
+  for (const cb of [...m.storeCallbacks]) cb();
+  assert.deepEqual(m.moves,['next','next']);
+
+  // Explicit unfollow must stop automatic re-following.
+  m.commands.vcunf.execute([]);
+  m.setCurrentChannel('next2');
+  for (const cb of [...m.storeCallbacks]) cb();
+  assert.deepEqual(m.moves,['next','next']);
+  m.plugin.onUnload();
+});
