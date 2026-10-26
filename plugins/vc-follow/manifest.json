@@ -3,12 +3,12 @@
   "format": 1,
   "id": "dev.community.vc-follow",
   "name": "VC Follow",
-  "description": "Follow a user between voice channels and retry when full.",
-  "author": "Li Fawaz",
-  "version": "1.2.1",
+  "description": "Follow a user between voice channels.",
+  "author": "Li Fawaz (https://github.com/kkssmm918839-crypto)",
+  "version": "1.2.2",
   "dependencies": {
     "revenge.api": {
-      "version": ">=1"
+      "version": ">=1 <2"
     },
     "discord": {
       "version": "*"
