@@ -1,5 +1,5 @@
 
-import { findByProps, findByName } from "@revenge-mod/modules/finders";
+import { findByProps, findByName } from "@revenge-mod/metro";
 import { after } from "@revenge-mod/patcher";
 
 const MENU_NAMES = [
