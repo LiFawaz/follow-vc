@@ -64,75 +64,37 @@ function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
 function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
 function permStore(): any { return probe("PermissionStore", [["can"]]); }
 function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
-function moderationActions(): any {
-    return probe("VoiceModerationActions", [
-        ["setServerMute", "setServerDeaf"],
-        ["setServerMute"],
-        ["setServerDeaf"],
-        ["setVoiceState"],
-        ["updateVoiceState"],
-    ]);
-}
 function recoverOwnServerRestrictions(state: VoiceState): void {
-    if (!running || storage.autoRecoverServerMute === false && storage.autoRecoverServerDeaf === false) return;
+    if (!running || storage.monitorServerRestrictions !== true) return;
     const id = ownId();
     if (!id || String(state.userId ?? state.user_id ?? state.user?.id ?? "") !== id) return;
     const channelId = state.channelId ?? state.channel_id ?? getOwnVoiceChannel();
     if (!channelId) return;
-    const channel = channelStore()?.getChannel?.(channelId);
-    if (!channel) { setStatus("Auto-recovery: cannot verify voice channel permissions"); return; }
 
     const serverMuted = !!(state.serverMute ?? state.server_mute ?? state.mute);
     const serverDeafened = !!(state.serverDeaf ?? state.server_deaf ?? state.deaf);
-    const wantUnmute = storage.autoRecoverServerMute !== false && serverMuted;
-    const wantUndeafen = storage.autoRecoverServerDeaf !== false && serverDeafened;
-    if (!wantUnmute && !wantUndeafen) { lastRecoveryKey = ""; return; }
+    if (!serverMuted && !serverDeafened) {
+        lastRecoveryKey = "";
+        return;
+    }
 
-    const allowedMute = wantUnmute && can(channel, MUTE_MEMBERS);
-    const allowedDeaf = wantUndeafen && can(channel, DEAFEN_MEMBERS);
+    const channel = channelStore()?.getChannel?.(channelId);
+    if (!channel) {
+        setStatus("Restriction monitor: server mute/deafen detected; channel permissions could not be verified");
+        return;
+    }
+    const allowedMute = !serverMuted || can(channel, MUTE_MEMBERS);
+    const allowedDeaf = !serverDeafened || can(channel, DEAFEN_MEMBERS);
     const key = [channelId, serverMuted ? "m" : "", serverDeafened ? "d" : "", allowedMute ? "M" : "", allowedDeaf ? "D" : ""].join(":");
     if (key === lastRecoveryKey) return;
     lastRecoveryKey = key;
 
-    if ((wantUnmute && !allowedMute) || (wantUndeafen && !allowedDeaf)) {
-        setStatus("Auto-recovery skipped: missing Mute Members and/or Deafen Members permission");
-        return;
-    }
-
-    const actions = moderationActions();
-    if (!actions) { setStatus("Auto-recovery unavailable: voice moderation actions not exposed by this client"); return; }
-    const guildId = String(state.guildId ?? state.guild_id ?? channel.guild_id ?? channel.guildId ?? "");
-    const attempts: Array<() => any> = [];
-    if (wantUnmute && typeof actions.setServerMute === "function") {
-        attempts.push(() => actions.setServerMute(guildId, id, false));
-        attempts.push(() => actions.setServerMute(id, false));
-    }
-    if (wantUndeafen && typeof actions.setServerDeaf === "function") {
-        attempts.push(() => actions.setServerDeaf(guildId, id, false));
-        attempts.push(() => actions.setServerDeaf(id, false));
-    }
-    if (typeof actions.setVoiceState === "function") {
-        attempts.push(() => actions.setVoiceState(guildId, id, { mute: false, deaf: false }));
-    }
-    if (typeof actions.updateVoiceState === "function") {
-        attempts.push(() => actions.updateVoiceState(guildId, id, { mute: false, deaf: false }));
-    }
-    if (!attempts.length) { setStatus("Auto-recovery unavailable: no compatible voice moderation action found"); return; }
-    try {
-        for (const attempt of attempts) {
-            try {
-                const result = attempt();
-                if (result && typeof result.then === "function") {
-                    result.then(() => setStatus("Auto-recovery request sent; waiting for Discord voice state confirmation"))
-                        .catch((err: any) => setStatus(`Auto-recovery rejected by Discord: ${String(err)}`));
-                    return;
-                }
-                setStatus("Auto-recovery request sent; waiting for Discord voice state confirmation");
-                return;
-            } catch (_) { /* Try the next API signature exposed by this client. */ }
-        }
-        setStatus("Auto-recovery failed: client rejected all supported action signatures");
-    } catch (err) { setStatus(`Auto-recovery failed: ${String(err)}`); }
+    const detected = [serverMuted ? "server-muted" : "", serverDeafened ? "server-deafened" : ""].filter(Boolean).join(" and ");
+    const permissions = [
+        serverMuted ? (allowedMute ? "Mute Members permission present" : "Mute Members permission missing") : "",
+        serverDeafened ? (allowedDeaf ? "Deafen Members permission present" : "Deafen Members permission missing") : "",
+    ].filter(Boolean).join("; ");
+    setStatus(`Restriction monitor: detected ${detected}. ${permissions}. No moderation action was sent.`);
 }
 function getOwnVoiceChannel(): string | null {
     const s = probe("SelectedChannelStore", [["getVoiceChannelId"], ["getCurrentVoiceChannelId"], ["getSelectedVoiceChannelId"]]);
@@ -369,7 +331,7 @@ function registerCommands(): void {
 export default {
     onLoad() {
         storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
-        storage.autoRecoverServerMute ??= true; storage.autoRecoverServerDeaf ??= true;
+        storage.monitorServerRestrictions ??= false;
         lastRecoveryKey = "";
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
