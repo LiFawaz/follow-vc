@@ -111,14 +111,17 @@ export function setAutoUnmuteUndeafen(enabled: boolean): void {
     }
 }
 function serverMemberActions(): any {
-    // Discord builds may expose these methods on separate modules, so probe
-    // each method independently instead of requiring a pair to exist together.
-    return probe("ServerMemberActions", [
-        ["setServerMute"], ["setServerDeaf"],
-        ["updateGuildMember"], ["updateMember"],
-        ["setMute"], ["setDeaf"],
-        ["updateGuildMemberMute"], ["updateGuildMemberDeaf"],
-    ]);
+    // Discord builds may split mute and deafen actions across different modules.
+    return {
+        setServerMute: probe("SetServerMuteAction", [["setServerMute"]])?.setServerMute,
+        setServerDeaf: probe("SetServerDeafAction", [["setServerDeaf"]])?.setServerDeaf,
+        updateGuildMember: probe("UpdateGuildMemberAction", [["updateGuildMember"]])?.updateGuildMember,
+        updateMember: probe("UpdateMemberAction", [["updateMember"]])?.updateMember,
+        setMute: probe("SetMuteAction", [["setMute"]])?.setMute,
+        setDeaf: probe("SetDeafAction", [["setDeaf"]])?.setDeaf,
+        updateGuildMemberMute: probe("UpdateGuildMemberMuteAction", [["updateGuildMemberMute"]])?.updateGuildMemberMute,
+        updateGuildMemberDeaf: probe("UpdateGuildMemberDeafAction", [["updateGuildMemberDeaf"]])?.updateGuildMemberDeaf,
+    };
 }
 function recoverOwnServerRestrictions(state: VoiceState): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
