@@ -32,8 +32,6 @@ let lastAttemptAt = 0;
 let pendingFollowDest: string | null = null;
 let followHold = false;
 let manualDisconnect = false;
-let followHold = false;
-let manualDisconnect = false;
 
 function log(msg: string): void { try { logger.log(`[VC Follow] ${msg}`); } catch (_) {} }
 function setStatus(msg: string): void { storage.status = msg; log(msg); }
@@ -293,7 +291,7 @@ export default {
         startListening(); injectProfileButton(); registerCommands(); log("Loaded.");
     },
     onUnload() {
-        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false; followHold = false; manualDisconnect = false;
+        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
         for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (err) { log(`Cleanup: ${String(err)}`); } }
         moduleCache.clear(); log("Unloaded.");
     },
