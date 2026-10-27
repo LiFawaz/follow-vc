@@ -30,6 +30,8 @@ const MUTE_MEMBERS = 4194304n;
 const DEAFEN_MEMBERS = 8388608n;
 const UNSET = "";
 let lastRecoveryKey = "";
+let lastRecoveryAt = 0;
+const RECOVERY_RETRY_MS = 300;
 const disposers: Array<() => void> = [];
 const moduleCache: Map<string, any> = new Map();
 let running = false;
@@ -134,6 +136,7 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
     const serverDeafened = !!(state.serverDeaf ?? state.server_deaf ?? state.deaf);
     if (!serverMuted && !serverDeafened) {
         lastRecoveryKey = "";
+        lastRecoveryAt = 0;
         return;
     }
 
@@ -145,8 +148,13 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
     const allowedMute = !serverMuted || can(channel, MUTE_MEMBERS);
     const allowedDeaf = !serverDeafened || can(channel, DEAFEN_MEMBERS);
     const key = [channelId, serverMuted ? "m" : "", serverDeafened ? "d" : "", allowedMute ? "M" : "", allowedDeaf ? "D" : ""].join(":");
-    if (key === lastRecoveryKey) return;
+    // Voice-state updates can arrive in bursts when moderators rapidly toggle
+    // server mute/deafen. Don't permanently suppress the same restriction state:
+    // throttle duplicate attempts briefly, then retry until Discord clears it.
+    const now = Date.now();
+    if (key === lastRecoveryKey && now - lastRecoveryAt < RECOVERY_RETRY_MS) return;
     lastRecoveryKey = key;
+    lastRecoveryAt = now;
 
     const detected = [serverMuted ? "server-muted" : "", serverDeafened ? "server-deafened" : ""].filter(Boolean).join(" and ");
     const permissions = [
@@ -432,6 +440,7 @@ export default {
         storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
         storage.autoUnmuteUndeafen ??= false;
         lastRecoveryKey = "";
+        lastRecoveryAt = 0;
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening();
