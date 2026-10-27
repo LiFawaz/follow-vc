@@ -172,7 +172,27 @@ export function stopFollowing(): string {
     lastSeenTargetChannel = null; lastAttemptChannel = null; setStatus("Not following");
     return "VC Follow OFF";
 }
-function watchManualDisconnect(): void {\n    const actions = voiceActions();\n    if (!actions) return;\n    const name = \"disconnect\";\n    const original = actions[name];\n    if (typeof original !== \"function\") return;\n    const wrapped = function(this: any, ...args: any[]) {\n        if (running && storage.enabled && storage.targetUserId) {\n            manualDisconnect = true; followHold = true;\n            setStatus(\"Follow on hold — manual disconnect\");\n        }\n        return original.apply(this, args);\n    };\n    try { actions[name] = wrapped; disposers.push(() => { if (actions[name] === wrapped) actions[name] = original; }); } catch (_) {}\n}\nfunction startListening(): void {\n    watchManualDisconnect();
+function watchManualDisconnect(): void {
+    const actions = voiceActions();
+    if (!actions) return;
+    const name = "disconnect";
+    const original = actions[name];
+    if (typeof original !== "function") return;
+    const wrapped = function(this: any, ...args: any[]) {
+        if (running && storage.enabled && storage.targetUserId) {
+            manualDisconnect = true;
+            followHold = true;
+            setStatus("Follow on hold — manual disconnect");
+        }
+        return original.apply(this, args);
+    };
+    try {
+        actions[name] = wrapped;
+        disposers.push(() => { if (actions[name] === wrapped) actions[name] = original; });
+    } catch (_) {}
+}
+function startListening(): void {
+    watchManualDisconnect();
     const flux = probe("Flux", [["dispatch", "subscribe", "unsubscribe"], ["subscribe", "unsubscribe"]]);
     if (flux && typeof flux.subscribe === "function") {
         for (const event of ["VOICE_STATE_UPDATES", "VOICE_STATE_UPDATE"]) {
