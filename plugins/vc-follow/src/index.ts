@@ -103,14 +103,21 @@ function recoverOwnSelfMuteDeafen(): void {
 }
 export function setAutoUnmuteUndeafen(enabled: boolean): void {
     storage.autoUnmuteUndeafen = enabled;
-    if (enabled) recoverOwnSelfMuteDeafen();
+    if (enabled) {
+        recoverOwnSelfMuteDeafen();
+        const id = ownId();
+        const state = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
+        if (state) recoverOwnServerRestrictions(state);
+    }
 }
 function serverMemberActions(): any {
+    // Discord builds may expose these methods on separate modules, so probe
+    // each method independently instead of requiring a pair to exist together.
     return probe("ServerMemberActions", [
-        ["updateMember"],
-        ["updateGuildMember"],
-        ["setMute", "setDeaf"],
-        ["setServerMute", "setServerDeaf"],
+        ["setServerMute"], ["setServerDeaf"],
+        ["updateGuildMember"], ["updateMember"],
+        ["setMute"], ["setDeaf"],
+        ["updateGuildMemberMute"], ["updateGuildMemberDeaf"],
     ]);
 }
 function recoverOwnServerRestrictions(state: VoiceState): void {
@@ -163,6 +170,9 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
             } else if (typeof actions?.setMute === "function") {
                 actions.setMute(guildId, ownUserId, false);
                 attempts.push("server-unmute requested");
+            } else if (typeof actions?.updateGuildMemberMute === "function") {
+                actions.updateGuildMemberMute(guildId, ownUserId, false);
+                attempts.push("server-unmute requested");
             }
         }
         if (guildId && ownUserId && serverDeafened && allowedDeaf) {
@@ -177,6 +187,9 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
                 attempts.push("server-undeafen requested");
             } else if (typeof actions?.setDeaf === "function") {
                 actions.setDeaf(guildId, ownUserId, false);
+                attempts.push("server-undeafen requested");
+            } else if (typeof actions?.updateGuildMemberDeaf === "function") {
+                actions.updateGuildMemberDeaf(guildId, ownUserId, false);
                 attempts.push("server-undeafen requested");
             }
         }
@@ -297,6 +310,9 @@ function onVoiceEvent(payload: any): void {
 function onVoiceStoreChanged(): void {
     if (!running) return;
     recoverOwnSelfMuteDeafen();
+    const id = ownId();
+    const ownState = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
+    if (ownState) recoverOwnServerRestrictions(ownState);
     if (!storage.enabled || !storage.targetUserId) return;
     if (followHold) {
         const mine = getOwnVoiceChannel();
@@ -416,7 +432,11 @@ export default {
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening();
-        recoverOwnSelfMuteDeafen(); injectProfileButton(); log("Loaded.");
+        recoverOwnSelfMuteDeafen();
+        const id = ownId();
+        const ownState = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
+        if (ownState) recoverOwnServerRestrictions(ownState);
+        injectProfileButton(); log("Loaded.");
     },
     onUnload() {
         running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
