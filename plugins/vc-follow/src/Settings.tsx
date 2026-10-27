@@ -37,7 +37,7 @@ export default function Settings() {
             e(RN.View, { style: { flex: 1, paddingRight: 12 } },
                 Text('Monitor server restrictions', { marginBottom: 4, fontWeight: '600' }),
                 Text(
-                    'When enabled, detects if your account is server-muted or server-deafened and checks whether the matching VC moderation permission is present. It only reports status; it does not attempt to remove server restrictions.',
+                    'When enabled, checks for server mute/deafen and reports available permissions. Discord controls server restrictions, so this plugin cannot reliably remove them from your own account.',
                     { color: '#aaaaaa', fontSize: 13, marginBottom: 0 }
                 )
             ),
@@ -45,6 +45,7 @@ export default function Settings() {
                 value: storage.monitorServerRestrictions === true,
                 onValueChange: (value: boolean) => {
                     storage.monitorServerRestrictions = value;
+                    if (!value) storage.status = storage.status ?? 'Not following';
                     setResult(value ? 'Server restriction monitor enabled' : 'Server restriction monitor disabled');
                 },
                 trackColor: { false: '#555555', true: '#248046' },
@@ -60,6 +61,6 @@ export default function Settings() {
         Button('Follow VC', () => setResult(followUser(id)), '#5865F2'),
         Button('Unfollow VC', () => { setResult(stopFollowing()); setId(''); }, '#42454c'),
         Text(result, { color: '#a1b4fc' }),
-        Text('Commands: /vcf <user_id> · /vcunf\nOr long-press any username in chat → "Follow this user".', { color: '#aaaaaa', fontSize: 13 }),
+        Text('You can also long-press a user and choose “Follow this user”.', { color: '#aaaaaa', fontSize: 13 }),
     );
 }
