@@ -9,7 +9,6 @@ import { logger }                            from "@vendetta";
 import { findByProps, findByName }           from "@vendetta/metro";
 import { React, ReactNative }                from "@vendetta/metro/common";
 import { after }                             from "@vendetta/patcher";
-import { registerCommand }                   from "@vendetta/commands";
 import { storage }                           from "@vendetta/plugin";
 import Settings                              from "./Settings";
 
@@ -311,23 +310,6 @@ function injectProfileButton(): void {
     }
     if (patched === 0) log("Profile button: no context menu component found on this build");
 }
-function readCommandUser(args: any): unknown {
-    const item = Array.isArray(args) ? (args.find((a: any) => a?.name === "userid") ?? args[0]) : args;
-    return item?.value?.id ?? item?.value ?? item?.user?.id ?? item?.id ?? item;
-}
-function registerCommands(): void {
-    const commands: Array<[string, string, any[], (args: any) => string]> = [
-        ["vcf", "Follow a friend to their voice channel (works cross-server)", [{ name: "userid", displayName: "userid", description: "User ID to follow (17–22 digit number)", displayDescription: "User ID to follow (17–22 digit number)", type: 3, required: true }], args => String(followUser(readCommandUser(args)))],
-        ["vcunf", "Stop following voice channels", [], () => stopFollowing()],
-    ];
-    for (const [name, description, options, handler] of commands) {
-        try {
-            const unreg = registerCommand({ name, displayName: name, description, displayDescription: description, options, applicationId: "-1", inputType: 1, type: 1, execute: (args: any) => ({ send: false, result: handler(args) }) } as any);
-            if (typeof unreg === "function") disposers.push(unreg);
-            log(`Registered /${name}`);
-        } catch (err) { log(`Register /${name} failed: ${String(err)}`); }
-    }
-}
 export default {
     onLoad() {
         storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
@@ -335,7 +317,7 @@ export default {
         lastRecoveryKey = "";
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
-        startListening(); injectProfileButton(); registerCommands(); log("Loaded.");
+        startListening(); injectProfileButton(); log("Loaded.");
     },
     onUnload() {
         running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
