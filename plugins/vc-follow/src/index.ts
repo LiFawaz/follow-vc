@@ -270,6 +270,7 @@ function onVoiceEvent(payload: any): void {
         const userId = String(state.userId ?? state.user_id ?? state.user?.id ?? "");
         if (userId && userId === ownId()) {
             recoverOwnSelfMuteDeafen();
+            recoverOwnServerRestrictions(state);
             const channel = state.channelId ?? state.channel_id ?? null;
             if (!channel && storage.enabled && storage.targetUserId) {
                 if (manualDisconnect) {
