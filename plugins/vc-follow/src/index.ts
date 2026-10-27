@@ -91,6 +91,10 @@ function recoverOwnSelfMuteDeafen(): void {
         setStatus(`Auto recovery failed: ${String(err)}`);
     }
 }
+export function setAutoUnmuteUndeafen(enabled: boolean): void {
+    storage.autoUnmuteUndeafen = enabled;
+    if (enabled) recoverOwnSelfMuteDeafen();
+}
 function recoverOwnServerRestrictions(state: VoiceState): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
     const id = ownId();
@@ -227,7 +231,9 @@ function onVoiceEvent(payload: any): void {
     }
 }
 function onVoiceStoreChanged(): void {
-    if (!running || !storage.enabled || !storage.targetUserId) return;
+    if (!running) return;
+    recoverOwnSelfMuteDeafen();
+    if (!storage.enabled || !storage.targetUserId) return;
     if (followHold) {
         const mine = getOwnVoiceChannel();
         if (!mine) return;
@@ -345,7 +351,8 @@ export default {
         lastRecoveryKey = "";
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
-        startListening(); injectProfileButton(); log("Loaded.");
+        startListening();
+        recoverOwnSelfMuteDeafen(); injectProfileButton(); log("Loaded.");
     },
     onUnload() {
         running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
