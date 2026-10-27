@@ -65,11 +65,7 @@ function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
 function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
 function permStore(): any { return probe("PermissionStore", [["can"]]); }
 function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
-function selfMuteAction(): any { return probe("SelfMuteAction", [["toggleSelfMute"], ["toggleSelfMuteRequest"], ["setSelfMute"], ["updateSelfMute"]]); }
-function selfDeafAction(): any { return probe("SelfDeafAction", [["toggleSelfDeaf"], ["toggleSelfDeafRequest"], ["setSelfDeaf"], ["updateSelfDeaf"]]); }
-function selfMuteStore(): any { return probe("SelfMuteStore", [["isSelfMute"], ["isMuted"]]); }
-function selfDeafStore(): any { return probe("SelfDeafStore", [["isSelfDeaf"], ["isDeafened"]]); }
-function recoverOwnSelfMuteDeafen(): void {
+function recoverOwnSelfMuteDeafen_REMOVED(): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
     const muteStore = selfMuteStore();
     const deafStore = selfDeafStore();
@@ -106,8 +102,7 @@ function recoverOwnSelfMuteDeafen(): void {
 export function setAutoUnmuteUndeafen(enabled: boolean): void {
     storage.autoUnmuteUndeafen = enabled;
     if (enabled) {
-        recoverOwnSelfMuteDeafen();
-        const id = ownId();
+            const id = ownId();
         const state = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
         if (state) recoverOwnServerRestrictions(state);
     }
@@ -293,7 +288,6 @@ function onVoiceEvent(payload: any): void {
         if (!state) continue;
         const userId = String(state.userId ?? state.user_id ?? state.user?.id ?? "");
         if (userId && userId === ownId()) {
-            recoverOwnSelfMuteDeafen();
             recoverOwnServerRestrictions(state);
             const channel = state.channelId ?? state.channel_id ?? null;
             if (!channel && storage.enabled && storage.targetUserId) {
@@ -320,7 +314,6 @@ function onVoiceEvent(payload: any): void {
 }
 function onVoiceStoreChanged(): void {
     if (!running) return;
-    recoverOwnSelfMuteDeafen();
     const id = ownId();
     const ownState = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
     if (ownState) recoverOwnServerRestrictions(ownState);
@@ -444,8 +437,7 @@ export default {
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening();
-        recoverOwnSelfMuteDeafen();
-        const id = ownId();
+            const id = ownId();
         const ownState = id ? voiceStore()?.getVoiceStateForUser?.(id) : null;
         if (ownState) recoverOwnServerRestrictions(ownState);
         injectProfileButton(); log("Loaded.");
