@@ -202,21 +202,25 @@ export function stopFollowing(): string {
 function watchManualDisconnect(): void {
     const actions = voiceActions();
     if (!actions) return;
-    const name = "disconnect";
-    const original = actions[name];
-    if (typeof original !== "function") return;
-    const wrapped = function(this: any, ...args: any[]) {
-        if (running && storage.enabled && storage.targetUserId) {
-            manualDisconnect = true;
-            followHold = true;
-            setStatus("Follow on hold — manual disconnect");
-        }
-        return original.apply(this, args);
-    };
-    try {
-        actions[name] = wrapped;
-        disposers.push(() => { if (actions[name] === wrapped) actions[name] = original; });
-    } catch (_) {}
+    // Discord clients commonly disconnect by calling selectVoiceChannel(null),
+    // not a dedicated disconnect() action. Watch both API shapes.
+    for (const name of ["disconnect", "selectVoiceChannel"]) {
+        const original = actions[name];
+        if (typeof original !== "function") continue;
+        const wrapped = function(this: any, ...args: any[]) {
+            const isDisconnect = name === "disconnect" || (name === "selectVoiceChannel" && (args[0] == null || args[0] === ""));
+            if (isDisconnect && running && storage.enabled && storage.targetUserId) {
+                manualDisconnect = true;
+                followHold = true;
+                setStatus("Follow on hold — manual disconnect");
+            }
+            return original.apply(this, args);
+        };
+        try {
+            actions[name] = wrapped;
+            disposers.push(() => { if (actions[name] === wrapped) actions[name] = original; });
+        } catch (_) {}
+    }
 }
 function startListening(): void {
     watchManualDisconnect();
