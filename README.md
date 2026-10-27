@@ -1,31 +1,17 @@
 # VC Follow
 
-A small Revenge/Vendetta-compatible plugin that follows a selected user between voice channels.
+VC Follow is a Revenge/Vendetta-compatible Discord plugin that keeps you in the same voice channel as a user you choose. It can follow them between channels and servers, and tries to re-follow if you switch channels yourself.
 
 ## Install
 
-In Revenge → Plugins, paste this link:
+In Revenge, open **Plugins** and paste:
 
 `https://kkssmm918839-crypto.github.io/follow-vc/vc-follow/`
 
-Enable VC Follow, open its settings, and enter a Discord user ID. You can also choose **Follow this user** from a supported user menu. Press **Unfollow VC** to stop.
-
-## Auto unmute / undeafen
-
-Turn the switch on to automatically turn off your own client-side mute and deafen when detected. Turn it off to disable this behavior completely. The switch is green when enabled.
-
-This only controls your own client mute/deafen. It cannot remove a server-imposed mute or deafen; Discord controls those restrictions.
+Open a user's context menu and select **Follow this user**. Use the plugin settings to manage following. The auto unmute/undeafen option only changes your own client-side mute and deafen; it cannot bypass a server mute or deafen. Turn it off to disable that behavior.
 
 ## Notes
 
-The plugin relies on Discord client internals, which can change between Revenge/Vendetta builds. Check the plugin status/logs if something does not work.
+Discord updates can change the client internals this plugin relies on, so compatibility may vary by build.
 
-## Build
-
-Requires Node.js and pnpm.
-
-```sh
-pnpm install
-pnpm test
-pnpm run build
-```
+Made by [Li Fawaz](https://github.com/kkssmm918839-crypto).
