@@ -30,14 +30,14 @@ export default function Settings() {
             'friend to move to another channel. You do not need to be in a voice channel first.'
         ),
         Text(`Status: ${storage.status ?? 'Not following'}`),
-        Text('Auto unmute / undeafen', { fontSize: 17, fontWeight: 'bold', marginTop: 12 }),
+        Text('Auto server unmute / undeafen', { fontSize: 17, fontWeight: 'bold', marginTop: 12 }),
         e(RN.View, {
             style: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
         },
             e(RN.View, { style: { flex: 1, paddingRight: 12 } },
-                Text('Automatically unmute and undeafen', { marginBottom: 4, fontWeight: '600' }),
+                Text('Automatically remove server mute / deafen', { marginBottom: 4, fontWeight: '600' }),
                 Text(
-                    'When enabled, automatically turns off your own client mute/deafen if active. When disabled, it does nothing. Server-imposed mute/deafen cannot be removed this way.',
+                    'When enabled, detects server mute/deafen applied to you and attempts to request removal if your permissions allow it. It never changes your normal client mute/deafen.',
                     { color: '#aaaaaa', fontSize: 13, marginBottom: 0 }
                 )
             ),
@@ -46,7 +46,7 @@ export default function Settings() {
                 onValueChange: (value: boolean) => {
                     setAutoUnmuteUndeafen(value);
                     if (!value) storage.status = storage.status ?? 'Not following';
-                    setResult(value ? 'Auto unmute/undeafen enabled' : 'Auto unmute/undeafen disabled');
+                    setResult(value ? 'Auto server unmute/undeafen enabled' : 'Auto server unmute/undeafen disabled');
                 },
                 trackColor: { false: '#555555', true: '#248046' },
                 thumbColor: storage.autoUnmuteUndeafen === true ? '#d8ffe4' : '#eeeeee',
