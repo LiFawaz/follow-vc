@@ -1,6 +1,6 @@
 {
   "name": "VC Follow",
-  "description": "Auto-follow a friend between voice channels, including cross-server. /vcf <id> · /vcunf · long-press any user → Follow.",
+  "description": "Auto-follow a friend between voice channels, with optional automatic self-unmute and undeafen.",
   "authors": [
     {
       "name": "Li Fawaz",
