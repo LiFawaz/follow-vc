@@ -62,23 +62,28 @@ function voiceStore(): any {
 function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
 function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
 function permStore(): any { return probe("PermissionStore", [["can"]]); }
-function voiceActions(): any { return probe("VoiceActions", [["toggleSelfMute", "toggleSelfDeaf"], ["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
-function mediaEngineStore(): any { return probe("MediaEngineStore", [["isSelfMute", "isSelfDeaf"], ["isSelfMute"], ["isSelfDeaf"]]); }
+function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
+function selfMuteAction(): any { return probe("SelfMuteAction", [["toggleSelfMute"], ["toggleSelfMuteRequest"], ["setSelfMute"]]); }
+function selfDeafAction(): any { return probe("SelfDeafAction", [["toggleSelfDeaf"], ["toggleSelfDeafRequest"], ["setSelfDeaf"]]); }
+function mediaEngineStore(): any { return probe("MediaEngineStore", [["isSelfMute"], ["isSelfDeaf"]]); }
 function recoverOwnSelfMuteDeafen(): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
     const media = mediaEngineStore();
-    const actions = voiceActions();
-    if (!media || !actions) return;
+    if (!media) return;
+    const muteActions = selfMuteAction();
+    const deafActions = selfDeafAction();
     try {
         const selfMuted = !!media.isSelfMute?.();
         const selfDeafened = !!media.isSelfDeaf?.();
         const changes: string[] = [];
-        if (selfMuted && typeof actions.toggleSelfMute === "function") {
-            actions.toggleSelfMute();
+        const toggleMute = muteActions?.toggleSelfMute ?? muteActions?.toggleSelfMuteRequest ?? muteActions?.setSelfMute;
+        const toggleDeaf = deafActions?.toggleSelfDeaf ?? deafActions?.toggleSelfDeafRequest ?? deafActions?.setSelfDeaf;
+        if (selfMuted && typeof toggleMute === "function") {
+            toggleMute.call(muteActions, false);
             changes.push("unmuted");
         }
-        if (selfDeafened && typeof actions.toggleSelfDeaf === "function") {
-            actions.toggleSelfDeaf();
+        if (selfDeafened && typeof toggleDeaf === "function") {
+            toggleDeaf.call(deafActions, false);
             changes.push("undeafened");
         }
         if (changes.length) setStatus(`Auto recovery: requested ${changes.join(" and ")}.`);
