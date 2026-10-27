@@ -65,7 +65,7 @@ function permStore(): any { return probe("PermissionStore", [["can"]]); }
 function voiceActions(): any { return probe("VoiceActions", [["toggleSelfMute", "toggleSelfDeaf"], ["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
 function mediaEngineStore(): any { return probe("MediaEngineStore", [["isSelfMute", "isSelfDeaf"], ["isSelfMute"], ["isSelfDeaf"]]); }
 function recoverOwnSelfMuteDeafen(): void {
-    if (!running || storage.monitorServerRestrictions !== true) return;
+    if (!running || storage.autoUnmuteUndeafen !== true) return;
     const media = mediaEngineStore();
     const actions = voiceActions();
     if (!media || !actions) return;
@@ -87,7 +87,7 @@ function recoverOwnSelfMuteDeafen(): void {
     }
 }
 function recoverOwnServerRestrictions(state: VoiceState): void {
-    if (!running || storage.monitorServerRestrictions !== true) return;
+    if (!running || storage.autoUnmuteUndeafen !== true) return;
     const id = ownId();
     if (!id || String(state.userId ?? state.user_id ?? state.user?.id ?? "") !== id) return;
     const channelId = state.channelId ?? state.channel_id ?? getOwnVoiceChannel();
@@ -336,7 +336,7 @@ function injectProfileButton(): void {
 export default {
     onLoad() {
         storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
-        storage.monitorServerRestrictions ??= false;
+        storage.autoUnmuteUndeafen ??= false;
         lastRecoveryKey = "";
         running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
