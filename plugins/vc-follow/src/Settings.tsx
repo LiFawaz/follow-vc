@@ -42,14 +42,14 @@ export default function Settings() {
                 )
             ),
             e(RN.Switch, {
-                value: storage.monitorServerRestrictions === true,
+                value: storage.autoUnmuteUndeafen === true,
                 onValueChange: (value: boolean) => {
-                    storage.monitorServerRestrictions = value;
+                    storage.autoUnmuteUndeafen = value;
                     if (!value) storage.status = storage.status ?? 'Not following';
                     setResult(value ? 'Auto unmute/undeafen enabled' : 'Auto unmute/undeafen disabled');
                 },
                 trackColor: { false: '#555555', true: '#248046' },
-                thumbColor: storage.monitorServerRestrictions === true ? '#d8ffe4' : '#eeeeee',
+                thumbColor: storage.autoUnmuteUndeafen === true ? '#d8ffe4' : '#eeeeee',
             })
         ),
         Text('Discord user ID'),
