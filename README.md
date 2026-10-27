@@ -1,17 +1,21 @@
-# VC Follow
+# Revenge plugins by LiFawaz
 
-VC Follow is a Revenge/Vendetta-compatible Discord plugin that keeps you in the same voice channel as a user you choose. It can follow them between channels and servers, and tries to re-follow if you switch channels yourself.
+## VC Follow
 
-## Install
+Keeps you in the same voice channel as a user you choose.
 
-In Revenge, open **Plugins** and paste:
+Install in Revenge → Plugins → Install from URL:
 
-`https://kkssmm918839-crypto.github.io/follow-vc/vc-follow/`
+`https://LiFawaz.github.io/follow-vc/vc-follow/`
 
-Open a user's context menu and select **Follow this user**. Use the plugin settings to manage following. The auto unmute/undeafen option only changes your own client-side mute and deafen; it cannot bypass a server mute or deafen. Turn it off to disable that behavior.
+## Fake-deaf
 
-## Notes
+Makes your outgoing voice-state flags appear muted and/or deafened while the plugin is enabled. Your actual microphone and audio may remain live locally; behavior depends on the Discord client and is not a way to bypass a server-enforced mute or deafen.
 
-Discord updates can change the client internals this plugin relies on, so compatibility may vary by build.
+Install in Revenge → Plugins → Install from URL:
 
-Made by [Li Fawaz](https://github.com/kkssmm918839-crypto).
+`https://LiFawaz.github.io/follow-vc/fake-deafen/`
+
+Toggle Fake-deaf in plugin settings or use `/fake` when commands are available.
+
+Made by [LiFawaz](https://github.com/LiFawaz).
