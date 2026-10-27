@@ -49,7 +49,7 @@ test('loads with following disabled by default and exposes settings', () => {
   const m = environment();
   m.plugin.onLoad();
   assert.equal(m.storage.enabled, false);
-  assert.equal(m.storage.monitorServerRestrictions, false);
+  assert.equal(m.storage.autoUnmuteUndeafen, false);
   assert.equal(typeof m.plugin.settings, 'function');
   assert.ok(m.listeners.get('VOICE_STATE_UPDATES')?.size);
   m.plugin.onUnload();
