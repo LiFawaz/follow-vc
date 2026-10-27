@@ -30,14 +30,14 @@ export default function Settings() {
             'friend to move to another channel. You do not need to be in a voice channel first.'
         ),
         Text(`Status: ${storage.status ?? 'Not following'}`),
-        Text('Server mute/deafen monitor', { fontSize: 17, fontWeight: 'bold', marginTop: 12 }),
+        Text('Auto unmute / undeafen', { fontSize: 17, fontWeight: 'bold', marginTop: 12 }),
         e(RN.View, {
             style: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
         },
             e(RN.View, { style: { flex: 1, paddingRight: 12 } },
-                Text('Monitor server restrictions', { marginBottom: 4, fontWeight: '600' }),
+                Text('Automatically unmute and undeafen', { marginBottom: 4, fontWeight: '600' }),
                 Text(
-                    'When enabled, checks for server mute/deafen and reports available permissions. Discord controls server restrictions, so this plugin cannot reliably remove them from your own account.',
+                    'When enabled, automatically turns off your own client mute/deafen if active. When disabled, it does nothing. Server-imposed mute/deafen cannot be removed this way.',
                     { color: '#aaaaaa', fontSize: 13, marginBottom: 0 }
                 )
             ),
@@ -46,7 +46,7 @@ export default function Settings() {
                 onValueChange: (value: boolean) => {
                     storage.monitorServerRestrictions = value;
                     if (!value) storage.status = storage.status ?? 'Not following';
-                    setResult(value ? 'Server restriction monitor enabled' : 'Server restriction monitor disabled');
+                    setResult(value ? 'Auto unmute/undeafen enabled' : 'Auto unmute/undeafen disabled');
                 },
                 trackColor: { false: '#555555', true: '#248046' },
                 thumbColor: storage.monitorServerRestrictions === true ? '#d8ffe4' : '#eeeeee',
