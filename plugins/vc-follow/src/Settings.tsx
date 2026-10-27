@@ -30,6 +30,27 @@ export default function Settings() {
             'friend to move to another channel. You do not need to be in a voice channel first.'
         ),
         Text(`Status: ${storage.status ?? 'Not following'}`),
+        Text('Server mute/deafen monitor', { fontSize: 17, fontWeight: 'bold', marginTop: 12 }),
+        e(RN.View, {
+            style: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 },
+        },
+            e(RN.View, { style: { flex: 1, paddingRight: 12 } },
+                Text('Monitor server restrictions', { marginBottom: 4, fontWeight: '600' }),
+                Text(
+                    'When enabled, detects if your account is server-muted or server-deafened and checks whether the matching VC moderation permission is present. It only reports status; it does not attempt to remove server restrictions.',
+                    { color: '#aaaaaa', fontSize: 13, marginBottom: 0 }
+                )
+            ),
+            e(RN.Switch, {
+                value: storage.monitorServerRestrictions === true,
+                onValueChange: (value: boolean) => {
+                    storage.monitorServerRestrictions = value;
+                    setResult(value ? 'Server restriction monitor enabled' : 'Server restriction monitor disabled');
+                },
+                trackColor: { false: '#555555', true: '#248046' },
+                thumbColor: storage.monitorServerRestrictions === true ? '#d8ffe4' : '#eeeeee',
+            })
+        ),
         Text('Discord user ID'),
         e(RN.TextInput, {
             value: id, onChangeText: setId, keyboardType: 'numeric',
