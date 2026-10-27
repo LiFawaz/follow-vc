@@ -30,6 +30,8 @@ let lastSeenTargetChannel: string | null = null;
 let lastAttemptChannel: string | null = null;
 let lastAttemptAt = 0;
 let pendingFollowDest: string | null = null;
+let followHold = false;
+let manualDisconnect = false;
 
 function log(msg: string): void { try { logger.log(`[VC Follow] ${msg}`); } catch (_) {} }
 function setStatus(msg: string): void { storage.status = msg; log(msg); }
@@ -159,18 +161,18 @@ export function followUser(idOrMention: unknown): string {
     const id = normalizeUserId(idOrMention);
     if (!id) return "Provide a valid Discord user ID (17–22 digits).";
     if (id === ownId()) return "You can't follow yourself.";
-    storage.targetUserId = id; storage.enabled = true; pendingFollowDest = null;
+    storage.targetUserId = id; storage.enabled = true; followHold = false; manualDisconnect = false; pendingFollowDest = null;
     lastSeenTargetChannel = getUserVoiceChannel(id); lastAttemptChannel = null;
     setStatus(`Following ${id} — waiting for a VC move`);
     if (lastSeenTargetChannel) tryMoveTo(lastSeenTargetChannel, "start");
     return `VC Follow ON for ${id}`;
 }
 export function stopFollowing(): string {
-    storage.enabled = false; storage.targetUserId = UNSET; pendingFollowDest = null;
+    storage.enabled = false; storage.targetUserId = UNSET; followHold = false; manualDisconnect = false; pendingFollowDest = null;
     lastSeenTargetChannel = null; lastAttemptChannel = null; setStatus("Not following");
     return "VC Follow OFF";
 }
-function startListening(): void {
+function watchManualDisconnect(): void {\n    const actions = voiceActions();\n    if (!actions) return;\n    const name = \"disconnect\";\n    const original = actions[name];\n    if (typeof original !== \"function\") return;\n    const wrapped = function(this: any, ...args: any[]) {\n        if (running && storage.enabled && storage.targetUserId) {\n            manualDisconnect = true; followHold = true;\n            setStatus(\"Follow on hold — manual disconnect\");\n        }\n        return original.apply(this, args);\n    };\n    try { actions[name] = wrapped; disposers.push(() => { if (actions[name] === wrapped) actions[name] = original; }); } catch (_) {}\n}\nfunction startListening(): void {\n    watchManualDisconnect();
     const flux = probe("Flux", [["dispatch", "subscribe", "unsubscribe"], ["subscribe", "unsubscribe"]]);
     if (flux && typeof flux.subscribe === "function") {
         for (const event of ["VOICE_STATE_UPDATES", "VOICE_STATE_UPDATE"]) {
@@ -237,12 +239,12 @@ function registerCommands(): void {
 export default {
     onLoad() {
         storage.enabled ??= false; storage.targetUserId ??= UNSET; storage.status ??= "Not following";
-        running = true; pendingFollowDest = null; moduleCache.clear();
+        running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening(); injectProfileButton(); registerCommands(); log("Loaded.");
     },
     onUnload() {
-        running = false; pendingFollowDest = null;
+        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
         for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (err) { log(`Cleanup: ${String(err)}`); } }
         moduleCache.clear(); log("Unloaded.");
     },
