@@ -105,6 +105,14 @@ export function setAutoUnmuteUndeafen(enabled: boolean): void {
     storage.autoUnmuteUndeafen = enabled;
     if (enabled) recoverOwnSelfMuteDeafen();
 }
+function serverMemberActions(): any {
+    return probe("ServerMemberActions", [
+        ["updateMember"],
+        ["updateGuildMember"],
+        ["setMute", "setDeaf"],
+        ["setServerMute", "setServerDeaf"],
+    ]);
+}
 function recoverOwnServerRestrictions(state: VoiceState): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
     const id = ownId();
@@ -135,7 +143,52 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
         serverMuted ? (allowedMute ? "Mute Members permission present" : "Mute Members permission missing") : "",
         serverDeafened ? (allowedDeaf ? "Deafen Members permission present" : "Deafen Members permission missing") : "",
     ].filter(Boolean).join("; ");
-    setStatus(`Restriction monitor: detected ${detected}. ${permissions}. No moderation action was sent.`);
+
+    // Use Discord's existing client action only; never make raw authenticated API calls.
+    const actions = serverMemberActions();
+    const guildId = String(state.guildId ?? state.guild_id ?? channel.guild_id ?? channel.guildId ?? "");
+    const id = ownId();
+    const attempts: string[] = [];
+    try {
+        if (guildId && id && serverMuted && allowedMute) {
+            if (typeof actions?.updateMember === "function") {
+                actions.updateMember(guildId, id, { mute: false });
+                attempts.push("server-unmute requested");
+            } else if (typeof actions?.updateGuildMember === "function") {
+                actions.updateGuildMember(guildId, id, { mute: false });
+                attempts.push("server-unmute requested");
+            } else if (typeof actions?.setServerMute === "function") {
+                actions.setServerMute(guildId, id, false);
+                attempts.push("server-unmute requested");
+            } else if (typeof actions?.setMute === "function") {
+                actions.setMute(guildId, id, false);
+                attempts.push("server-unmute requested");
+            }
+        }
+        if (guildId && id && serverDeafened && allowedDeaf) {
+            if (typeof actions?.updateMember === "function") {
+                actions.updateMember(guildId, id, { deaf: false });
+                attempts.push("server-undeafen requested");
+            } else if (typeof actions?.updateGuildMember === "function") {
+                actions.updateGuildMember(guildId, id, { deaf: false });
+                attempts.push("server-undeafen requested");
+            } else if (typeof actions?.setServerDeaf === "function") {
+                actions.setServerDeaf(guildId, id, false);
+                attempts.push("server-undeafen requested");
+            } else if (typeof actions?.setDeaf === "function") {
+                actions.setDeaf(guildId, id, false);
+                attempts.push("server-undeafen requested");
+            }
+        }
+    } catch (err) {
+        setStatus(`Server restriction recovery failed: ${String(err)}`);
+        return;
+    }
+    if (attempts.length) {
+        setStatus(`Detected ${detected}; ${attempts.join(" and ")}. ${permissions}. Waiting for Discord confirmation.`);
+    } else {
+        setStatus(`Detected ${detected}. ${permissions}. ${actions ? "No compatible server mute/deafen action was found." : "Discord's server member actions were not found on this build."}`);
+    }
 }
 function getOwnVoiceChannel(): string | null {
     const s = probe("SelectedChannelStore", [["getVoiceChannelId"], ["getCurrentVoiceChannelId"], ["getSelectedVoiceChannelId"]]);
