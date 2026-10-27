@@ -1,7 +1,7 @@
 import { storage }                     from '@vendetta/plugin';
 import { useProxy }                    from '@vendetta/storage';
 import { React, ReactNative }          from '@vendetta/metro/common';
-import { followUser, stopFollowing }   from './index';
+import { followUser, stopFollowing, setAutoUnmuteUndeafen } from './index';
 
 export default function Settings() {
     useProxy(storage);
@@ -44,7 +44,7 @@ export default function Settings() {
             e(RN.Switch, {
                 value: storage.autoUnmuteUndeafen === true,
                 onValueChange: (value: boolean) => {
-                    storage.autoUnmuteUndeafen = value;
+                    setAutoUnmuteUndeafen(value);
                     if (!value) storage.status = storage.status ?? 'Not following';
                     setResult(value ? 'Auto unmute/undeafen enabled' : 'Auto unmute/undeafen disabled');
                 },
