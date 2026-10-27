@@ -63,30 +63,40 @@ function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
 function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
 function permStore(): any { return probe("PermissionStore", [["can"]]); }
 function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
-function selfMuteAction(): any { return probe("SelfMuteAction", [["toggleSelfMute"], ["toggleSelfMuteRequest"], ["setSelfMute"]]); }
-function selfDeafAction(): any { return probe("SelfDeafAction", [["toggleSelfDeaf"], ["toggleSelfDeafRequest"], ["setSelfDeaf"]]); }
-function mediaEngineStore(): any { return probe("MediaEngineStore", [["isSelfMute"], ["isSelfDeaf"]]); }
+function selfMuteAction(): any { return probe("SelfMuteAction", [["toggleSelfMute"], ["toggleSelfMuteRequest"], ["setSelfMute"], ["updateSelfMute"]]); }
+function selfDeafAction(): any { return probe("SelfDeafAction", [["toggleSelfDeaf"], ["toggleSelfDeafRequest"], ["setSelfDeaf"], ["updateSelfDeaf"]]); }
+function selfMuteStore(): any { return probe("SelfMuteStore", [["isSelfMute"], ["isMuted"]]); }
+function selfDeafStore(): any { return probe("SelfDeafStore", [["isSelfDeaf"], ["isDeafened"]]); }
 function recoverOwnSelfMuteDeafen(): void {
     if (!running || storage.autoUnmuteUndeafen !== true) return;
-    const media = mediaEngineStore();
-    if (!media) return;
+    const muteStore = selfMuteStore();
+    const deafStore = selfDeafStore();
     const muteActions = selfMuteAction();
     const deafActions = selfDeafAction();
+    if (!muteStore && !deafStore) {
+        setStatus("Auto recovery unavailable: couldn't find Discord's self mute/deafen state stores");
+        return;
+    }
     try {
-        const selfMuted = !!media.isSelfMute?.();
-        const selfDeafened = !!media.isSelfDeaf?.();
+        const selfMuted = !!(muteStore?.isSelfMute?.() ?? muteStore?.isMuted?.());
+        const selfDeafened = !!(deafStore?.isSelfDeaf?.() ?? deafStore?.isDeafened?.());
         const changes: string[] = [];
         const toggleMute = muteActions?.toggleSelfMute ?? muteActions?.toggleSelfMuteRequest ?? muteActions?.setSelfMute;
         const toggleDeaf = deafActions?.toggleSelfDeaf ?? deafActions?.toggleSelfDeafRequest ?? deafActions?.setSelfDeaf;
         if (selfMuted && typeof toggleMute === "function") {
             toggleMute.call(muteActions, false);
-            changes.push("unmuted");
+            changes.push("unmute requested");
+        } else if (selfMuted) {
+            setStatus("Auto recovery: detected self-mute, but Discord's unmute action wasn't found");
         }
         if (selfDeafened && typeof toggleDeaf === "function") {
             toggleDeaf.call(deafActions, false);
-            changes.push("undeafened");
+            changes.push("undeafen requested");
+        } else if (selfDeafened) {
+            setStatus("Auto recovery: detected self-deafen, but Discord's undeafen action wasn't found");
         }
-        if (changes.length) setStatus(`Auto recovery: requested ${changes.join(" and ")}.`);
+        if (changes.length) setStatus(`Auto recovery: ${changes.join(" and ")}.`);
+        if (!selfMuted && !selfDeafened) setStatus("Auto recovery: your own mute/deafen are already off");
     } catch (err) {
         setStatus(`Auto recovery failed: ${String(err)}`);
     }
