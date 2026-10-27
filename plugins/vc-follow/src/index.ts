@@ -32,6 +32,8 @@ let lastAttemptAt = 0;
 let pendingFollowDest: string | null = null;
 let followHold = false;
 let manualDisconnect = false;
+let followHold = false;
+let manualDisconnect = false;
 
 function log(msg: string): void { try { logger.log(`[VC Follow] ${msg}`); } catch (_) {} }
 function setStatus(msg: string): void { storage.status = msg; log(msg); }
@@ -131,7 +133,28 @@ function onVoiceEvent(payload: any): void {
     if (!running || !payload) return;
     const updates: any[] = payload.voiceStates ?? payload.voice_states ?? (payload.voiceState ? [payload.voiceState] : [payload]);
     if (!Array.isArray(updates)) return;
-    for (const state of updates) if (state) maybeFollowState(state);
+    for (const state of updates) {
+        if (!state) continue;
+        const userId = String(state.userId ?? state.user_id ?? state.user?.id ?? "");
+        if (userId && userId === ownId()) {
+            const channel = state.channelId ?? state.channel_id ?? null;
+            if (!channel && storage.enabled && storage.targetUserId) {
+                if (manualDisconnect) {
+                    followHold = true;
+                    setStatus("Follow on hold — manual disconnect");
+                } else {
+                    const target = getUserVoiceChannel(String(storage.targetUserId));
+                    if (target) tryMoveTo(target, "reconnect after external disconnect");
+                }
+            } else if (channel && followHold) {
+                followHold = false;
+                manualDisconnect = false;
+                const target = getUserVoiceChannel(String(storage.targetUserId ?? ""));
+                if (storage.enabled && target && channel !== target) tryMoveTo(target, "resume after manual VC join");
+            }
+        }
+        maybeFollowState(state);
+    }
     if (pendingFollowDest && running && storage.enabled) {
         const dest = channelStore()?.getChannel?.(pendingFollowDest);
         if (dest && channelHasSpace(dest, pendingFollowDest)) tryMoveTo(pendingFollowDest, "capacity freed");
@@ -139,6 +162,12 @@ function onVoiceEvent(payload: any): void {
 }
 function onVoiceStoreChanged(): void {
     if (!running || !storage.enabled || !storage.targetUserId) return;
+    if (followHold) {
+        const mine = getOwnVoiceChannel();
+        if (!mine) return;
+        followHold = false;
+        manualDisconnect = false;
+    }
     const current = getUserVoiceChannel(storage.targetUserId);
     if (current !== lastSeenTargetChannel) {
         lastSeenTargetChannel = current;
@@ -264,7 +293,7 @@ export default {
         startListening(); injectProfileButton(); registerCommands(); log("Loaded.");
     },
     onUnload() {
-        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
+        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false; followHold = false; manualDisconnect = false;
         for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (err) { log(`Cleanup: ${String(err)}`); } }
         moduleCache.clear(); log("Unloaded.");
     },
