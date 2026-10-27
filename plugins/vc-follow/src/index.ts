@@ -147,36 +147,36 @@ function recoverOwnServerRestrictions(state: VoiceState): void {
     // Use Discord's existing client action only; never make raw authenticated API calls.
     const actions = serverMemberActions();
     const guildId = String(state.guildId ?? state.guild_id ?? channel.guild_id ?? channel.guildId ?? "");
-    const id = ownId();
+    const ownUserId = id;
     const attempts: string[] = [];
     try {
-        if (guildId && id && serverMuted && allowedMute) {
+        if (guildId && ownUserId && serverMuted && allowedMute) {
             if (typeof actions?.updateMember === "function") {
-                actions.updateMember(guildId, id, { mute: false });
+                actions.updateMember(guildId, ownUserId, { mute: false });
                 attempts.push("server-unmute requested");
             } else if (typeof actions?.updateGuildMember === "function") {
-                actions.updateGuildMember(guildId, id, { mute: false });
+                actions.updateGuildMember(guildId, ownUserId, { mute: false });
                 attempts.push("server-unmute requested");
             } else if (typeof actions?.setServerMute === "function") {
-                actions.setServerMute(guildId, id, false);
+                actions.setServerMute(guildId, ownUserId, false);
                 attempts.push("server-unmute requested");
             } else if (typeof actions?.setMute === "function") {
-                actions.setMute(guildId, id, false);
+                actions.setMute(guildId, ownUserId, false);
                 attempts.push("server-unmute requested");
             }
         }
-        if (guildId && id && serverDeafened && allowedDeaf) {
+        if (guildId && ownUserId && serverDeafened && allowedDeaf) {
             if (typeof actions?.updateMember === "function") {
-                actions.updateMember(guildId, id, { deaf: false });
+                actions.updateMember(guildId, ownUserId, { deaf: false });
                 attempts.push("server-undeafen requested");
             } else if (typeof actions?.updateGuildMember === "function") {
-                actions.updateGuildMember(guildId, id, { deaf: false });
+                actions.updateGuildMember(guildId, ownUserId, { deaf: false });
                 attempts.push("server-undeafen requested");
             } else if (typeof actions?.setServerDeaf === "function") {
-                actions.setServerDeaf(guildId, id, false);
+                actions.setServerDeaf(guildId, ownUserId, false);
                 attempts.push("server-undeafen requested");
             } else if (typeof actions?.setDeaf === "function") {
-                actions.setDeaf(guildId, id, false);
+                actions.setDeaf(guildId, ownUserId, false);
                 attempts.push("server-undeafen requested");
             }
         }
