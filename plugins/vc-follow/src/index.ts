@@ -62,7 +62,30 @@ function voiceStore(): any {
 function channelStore(): any { return probe("ChannelStore", [["getChannel"]]); }
 function userStore(): any { return probe("UserStore", [["getCurrentUser"]]); }
 function permStore(): any { return probe("PermissionStore", [["can"]]); }
-function voiceActions(): any { return probe("VoiceActions", [["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
+function voiceActions(): any { return probe("VoiceActions", [["toggleSelfMute", "toggleSelfDeaf"], ["selectVoiceChannel", "disconnect"], ["selectVoiceChannel"]]); }
+function mediaEngineStore(): any { return probe("MediaEngineStore", [["isSelfMute", "isSelfDeaf"], ["isSelfMute"], ["isSelfDeaf"]]); }
+function recoverOwnSelfMuteDeafen(): void {
+    if (!running || storage.monitorServerRestrictions !== true) return;
+    const media = mediaEngineStore();
+    const actions = voiceActions();
+    if (!media || !actions) return;
+    try {
+        const selfMuted = !!media.isSelfMute?.();
+        const selfDeafened = !!media.isSelfDeaf?.();
+        const changes: string[] = [];
+        if (selfMuted && typeof actions.toggleSelfMute === "function") {
+            actions.toggleSelfMute();
+            changes.push("unmuted");
+        }
+        if (selfDeafened && typeof actions.toggleSelfDeaf === "function") {
+            actions.toggleSelfDeaf();
+            changes.push("undeafened");
+        }
+        if (changes.length) setStatus(`Auto recovery: requested ${changes.join(" and ")}.`);
+    } catch (err) {
+        setStatus(`Auto recovery failed: ${String(err)}`);
+    }
+}
 function recoverOwnServerRestrictions(state: VoiceState): void {
     if (!running || storage.monitorServerRestrictions !== true) return;
     const id = ownId();
@@ -174,7 +197,7 @@ function onVoiceEvent(payload: any): void {
         if (!state) continue;
         const userId = String(state.userId ?? state.user_id ?? state.user?.id ?? "");
         if (userId && userId === ownId()) {
-            recoverOwnServerRestrictions(state);
+            recoverOwnSelfMuteDeafen();
             const channel = state.channelId ?? state.channel_id ?? null;
             if (!channel && storage.enabled && storage.targetUserId) {
                 if (manualDisconnect) {
