@@ -41,7 +41,6 @@ let lastAttemptAt = 0;
 let pendingFollowDest: string | null = null;
 let followHold = false;
 let manualDisconnect = false;
-let manualDisconnectFromChannel: string | null = null;
 
 function log(msg: string): void { try { logger.log(`[VC Follow] ${msg}`); } catch (_) {} }
 function setStatus(msg: string): void { storage.status = msg; log(msg); }
@@ -299,12 +298,9 @@ function onVoiceEvent(payload: any): void {
                     const target = getUserVoiceChannel(String(storage.targetUserId));
                     if (target) tryMoveTo(target, "reconnect after external disconnect");
                 }
-            } else if (channel && followHold && (!manualDisconnectFromChannel || channel !== manualDisconnectFromChannel)) {
-                // Resume only after a confirmed move into a different VC. A stale
-                // store snapshot of the pre-disconnect channel must not cancel the hold.
+            } else if (channel && followHold) {
                 followHold = false;
                 manualDisconnect = false;
-                manualDisconnectFromChannel = null;
                 const target = getUserVoiceChannel(String(storage.targetUserId ?? ""));
                 if (storage.enabled && target && channel !== target) tryMoveTo(target, "resume after manual VC join");
             }
@@ -323,16 +319,10 @@ function onVoiceStoreChanged(): void {
     if (ownState) recoverOwnServerRestrictions(ownState);
     if (!storage.enabled || !storage.targetUserId) return;
     if (followHold) {
-        // SelectedChannelStore can briefly retain the old channel after a
-        // self-disconnect. Use the user's voice state and require a new channel
-        // before resuming, so the follow loop stays alive without instant rejoin.
-        const id = ownId();
-        const mine = id ? getUserVoiceChannel(id) : null;
+        const mine = getOwnVoiceChannel();
         if (!mine) return;
-        if (manualDisconnect && manualDisconnectFromChannel && mine === manualDisconnectFromChannel) return;
         followHold = false;
         manualDisconnect = false;
-        manualDisconnectFromChannel = null;
     }
     const current = getUserVoiceChannel(storage.targetUserId);
     if (current !== lastSeenTargetChannel) {
@@ -356,14 +346,14 @@ export function followUser(idOrMention: unknown): string {
     const id = normalizeUserId(idOrMention);
     if (!id) return "Provide a valid Discord user ID (17–22 digits).";
     if (id === ownId()) return "You can't follow yourself.";
-    storage.targetUserId = id; storage.enabled = true; followHold = false; manualDisconnect = false; manualDisconnectFromChannel = null; pendingFollowDest = null;
+    storage.targetUserId = id; storage.enabled = true; followHold = false; manualDisconnect = false; pendingFollowDest = null;
     lastSeenTargetChannel = getUserVoiceChannel(id); lastAttemptChannel = null;
     setStatus(`Following ${id} — waiting for a VC move`);
     if (lastSeenTargetChannel) tryMoveTo(lastSeenTargetChannel, "start");
     return `VC Follow ON for ${id}`;
 }
 export function stopFollowing(): string {
-    storage.enabled = false; storage.targetUserId = UNSET; followHold = false; manualDisconnect = false; manualDisconnectFromChannel = null; pendingFollowDest = null;
+    storage.enabled = false; storage.targetUserId = UNSET; followHold = false; manualDisconnect = false; pendingFollowDest = null;
     lastSeenTargetChannel = null; lastAttemptChannel = null; setStatus("Not following");
     return "VC Follow OFF";
 }
@@ -379,9 +369,8 @@ function watchManualDisconnect(): void {
             const isDisconnect = name === "disconnect" || (name === "selectVoiceChannel" && (args[0] == null || args[0] === ""));
             if (isDisconnect && running && storage.enabled && storage.targetUserId) {
                 manualDisconnect = true;
-                manualDisconnectFromChannel = getOwnVoiceChannel() ?? getUserVoiceChannel(ownId() ?? "");
                 followHold = true;
-                setStatus("Follow on hold — waiting for you to join a VC");
+                setStatus("Follow on hold — manual disconnect");
             }
             return original.apply(this, args);
         };
@@ -445,7 +434,7 @@ export default {
         storage.autoUnmuteUndeafen ??= false;
         lastRecoveryKey = "";
         lastRecoveryAt = 0;
-        running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; manualDisconnectFromChannel = null; moduleCache.clear();
+        running = true; pendingFollowDest = null; followHold = false; manualDisconnect = false; moduleCache.clear();
         lastSeenTargetChannel = storage.enabled && storage.targetUserId ? getUserVoiceChannel(storage.targetUserId) : null;
         startListening();
             const id = ownId();
@@ -454,7 +443,7 @@ export default {
         injectProfileButton(); log("Loaded.");
     },
     onUnload() {
-        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false; manualDisconnectFromChannel = null;
+        running = false; pendingFollowDest = null; followHold = false; manualDisconnect = false;
         for (const dispose of disposers.splice(0).reverse()) { try { dispose(); } catch (err) { log(`Cleanup: ${String(err)}`); } }
         moduleCache.clear(); log("Unloaded.");
     },
